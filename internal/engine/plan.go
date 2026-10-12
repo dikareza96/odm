@@ -1,0 +1,62 @@
+package engine
+
+// NewPlan splits [0,total) into at most conns chunks. total<=0 (unknown size)
+// yields a single open-ended chunk that is filled sequentially.
+func NewPlan(total int64, conns int) []*Chunk {
+	if conns < 1 {
+		conns = 1
+	}
+	if total <= 0 {
+		return []*Chunk{{ID: 0, Start: 0, End: -1}}
+	}
+	size := (total + int64(conns) - 1) / int64(conns)
+	if size < MinChunkSize {
+		size = MinChunkSize
+	}
+	var chunks []*Chunk
+	for start, id := int64(0), 0; start < total; id++ {
+		end := start + size - 1
+		if end >= total {
+			end = total - 1
+		}
+		chunks = append(chunks, &Chunk{ID: id, Start: start, End: end})
+		start = end + 1
+	}
+	// Fold a too-small tail into the previous chunk instead of scheduling a
+	// tiny request, matching the reference product's minimum-chunk behaviour.
+	if n := len(chunks); n > 1 && chunks[n-1].Size() < MinChunkSize {
+		chunks[n-2].End = chunks[n-1].End
+		chunks = chunks[:n-1]
+	}
+	return chunks
+}
+
+// Split carves the tail half off the largest incomplete chunk and returns it
+// as a new chunk, mirroring the reference product's "alternative connection".
+// It reports false when no chunk is big enough to split safely.
+func Split(chunks []*Chunk, minChunk int64) (*Chunk, bool) {
+	var victim *Chunk
+	var best int64
+	maxID := -1
+	for _, c := range chunks {
+		if c.ID > maxID {
+			maxID = c.ID
+		}
+		if c.Complete() {
+			continue
+		}
+		if r := c.Remaining(); r >= 2*minChunk && r > best {
+			best, victim = r, c
+		}
+	}
+	if victim == nil {
+		return nil, false
+	}
+	mid := victim.Next() + victim.Remaining()/2
+	if mid <= victim.Start || mid > victim.End {
+		return nil, false
+	}
+	nc := &Chunk{ID: maxID + 1, Start: mid, End: victim.End}
+	victim.End = mid - 1
+	return nc, true
+}

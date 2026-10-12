@@ -1,0 +1,64 @@
+package engine
+
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+// Limiter is a shared token bucket throttling all connections of a download.
+// A non-positive rate disables limiting entirely.
+type Limiter struct {
+	mu     sync.Mutex
+	rate   float64
+	tokens float64
+	last   time.Time
+}
+
+// NewLimiter returns a limiter admitting bytesPerSecond bytes per second.
+func NewLimiter(bytesPerSecond int64) *Limiter {
+	return &Limiter{rate: float64(bytesPerSecond), last: time.Now()}
+}
+
+// SetRate changes the admitted rate (0 disables limiting) and refills the bucket.
+func (l *Limiter) SetRate(bytesPerSecond int64) {
+	l.mu.Lock()
+	l.rate = float64(bytesPerSecond)
+	l.tokens = 0
+	l.last = time.Now()
+	l.mu.Unlock()
+}
+
+// Wait blocks until n bytes may be consumed or ctx is done.
+func (l *Limiter) Wait(ctx context.Context, n int) error {
+	if l == nil || l.rate <= 0 || n <= 0 {
+		return nil
+	}
+	need := float64(n)
+	for {
+		l.mu.Lock()
+		now := time.Now()
+		l.tokens += now.Sub(l.last).Seconds() * l.rate
+		l.last = now
+		if l.tokens > l.rate {
+			l.tokens = l.rate
+		}
+		if l.tokens >= need {
+			l.tokens -= need
+			l.mu.Unlock()
+			return nil
+		}
+		deficit := need - l.tokens
+		l.mu.Unlock()
+
+		d := time.Duration(deficit / l.rate * float64(time.Second))
+		if d < time.Millisecond {
+			d = time.Millisecond
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+		}
+	}
+}

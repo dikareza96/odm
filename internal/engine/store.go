@@ -1,0 +1,71 @@
+package engine
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Store persists download state as one JSON file per download.
+type Store struct {
+	dir string
+}
+
+// NewStore prepares the state directory.
+func NewStore(dir string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	return &Store{dir: dir}, nil
+}
+
+func (s *Store) path(id string) string {
+	return filepath.Join(s.dir, id+".json")
+}
+
+// Save writes the state atomically.
+func (s *Store) Save(st State) error {
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.path(st.ID) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path(st.ID))
+}
+
+// Delete removes the state file for a download.
+func (s *Store) Delete(id string) error {
+	err := os.Remove(s.path(id))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// Load returns every persisted download state.
+func (s *Store) Load() ([]State, error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []State
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var st State
+		if err := json.Unmarshal(data, &st); err != nil {
+			continue
+		}
+		out = append(out, st)
+	}
+	return out, nil
+}

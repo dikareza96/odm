@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ochi Download Manager</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="app">
+  <header class="titlebar">
+    <div class="brand"><span class="dot"></span> Ochi Download Manager</div>
+    <div class="stat" id="globalStat">idle</div>
+  </header>
+
+  <div class="toolbar">
+    <button data-act="add">＋<span>Add URL</span></button>
+    <button data-act="resume" class="ghost">▶<span>Resume</span></button>
+    <button data-act="stop" class="ghost">■<span>Stop</span></button>
+    <button data-act="stop-all" class="ghost">⏹<span>Stop All</span></button>
+    <button data-act="delete" class="ghost">✕<span>Delete</span></button>
+    <button data-act="delete-completed" class="ghost">⌫<span>Del Completed</span></button>
+    <button data-act="options" class="ghost">⚙<span>Options</span></button>
+    <span class="spacer"></span>
+    <button data-act="pause-all" class="ghost">‖<span>Pause All</span></button>
+    <button data-act="resume-all" class="ghost">▶▶<span>Resume All</span></button>
+  </div>
+
+  <div class="main">
+    <aside class="sidebar" id="sidebar"></aside>
+    <section class="content">
+      <table class="grid">
+        <colgroup>
+          <col class="c-name" /><col class="c-size" /><col class="c-prog" />
+          <col class="c-status" /><col class="c-eta" /><col class="c-rate" /><col class="c-path" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th data-sort="file_name">File Name</th>
+            <th data-sort="total" class="num">Size</th>
+            <th data-sort="progress" class="num">Progress</th>
+            <th data-sort="status">Status</th>
+            <th data-sort="eta" class="num">Time left</th>
+            <th data-sort="speed" class="num">Transfer rate</th>
+            <th data-sort="dir">Path</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty hidden">No downloads. Use <b>Add URL</b> to start one.</div>
+    </section>
+  </div>
+</div>
+
+<!-- Add / "Download File Info" -->
+<dialog id="addDialog" class="fileinfo">
+  <form method="dialog" id="addForm">
+    <h2>Download File Info</h2>
+    <div class="fi">
+      <div class="fi-fields">
+        <label>URL<input id="url" type="text" autocomplete="off" placeholder="https://host/file.zip" /></label>
+        <label>Category<select id="category"></select></label>
+        <label>Save folder<input id="dir" type="text" /></label>
+        <label>File name<input id="fname" type="text" /></label>
+        <label>Connections<input id="conns" type="number" min="1" max="32" /></label>
+        <label>Description<input id="desc" type="text" /></label>
+      </div>
+      <div class="fi-side">
+        <div class="fi-icon" id="fiIcon">▤</div>
+        <div id="fiSize" class="muted">—</div>
+        <div id="fiType" class="muted"></div>
+      </div>
+    </div>
+    <div class="dlg-actions">
+      <button value="later" class="ghost">Download Later</button>
+      <button value="cancel" class="ghost">Cancel</button>
+      <button id="btnStart" value="ok">Start Download</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Options -->
+<dialog id="optionsDialog">
+  <form method="dialog" id="optionsForm">
+    <h2>Options</h2>
+    <label>Default folder<input id="setDir" type="text" /></label>
+    <label>Connections per file<input id="setConns" type="number" min="1" max="32" /></label>
+    <label>Simultaneous downloads<input id="setConcurrent" type="number" min="1" max="16" /></label>
+    <label>Global speed limit (KB/s, 0 = off)<input id="setLimit" type="number" min="0" /></label>
+    <label class="check"><input id="setCategories" type="checkbox" /> Put files in category subfolders</label>
+    <label class="check"><input id="setClipboard" type="checkbox" /> Watch clipboard for downloadable URLs (Windows)</label>
+    <div class="dlg-actions">
+      <button value="cancel" class="ghost">Close</button>
+      <button id="btnSaveSettings" value="ok">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Progress window -->
+<dialog id="progDialog" class="progress">
+  <div class="pg">
+    <div class="pg-head" id="pgTitle">Download</div>
+    <div class="tabs">
+      <button data-tab="status" class="tab active">Download status</button>
+      <button data-tab="limit" class="tab">Speed Limiter</button>
+      <button data-tab="completion" class="tab">Options on completion</button>
+    </div>
+
+    <div class="tab-panel" data-panel="status">
+      <table class="kv">
+        <tr><td>URL</td><td id="pgUrl"></td></tr>
+        <tr><td>Status</td><td id="pgStatus"></td></tr>
+        <tr><td>File size</td><td id="pgSize"></td></tr>
+        <tr><td>Downloaded</td><td id="pgDone"></td></tr>
+        <tr><td>Transfer rate</td><td id="pgRate"></td></tr>
+        <tr><td>Time left</td><td id="pgEta"></td></tr>
+        <tr><td>Resume capability</td><td id="pgResume"></td></tr>
+      </table>
+      <div class="pbar big"><i id="pgBar"></i></div>
+      <div class="strip" id="pgStrip"></div>
+      <div class="strip-legend">Start positions and download progress by connections</div>
+      <div id="pgConnWrap">
+        <table class="conns">
+          <thead><tr><th>N</th><th>Downloaded</th><th>Info</th></tr></thead>
+          <tbody id="pgConns"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tab-panel hidden" data-panel="limit">
+      <label>Limit (KB/s, 0 = unlimited)<input id="pgLimit" type="number" min="0" /></label>
+      <div class="dlg-actions"><button id="pgApplyLimit">Apply</button></div>
+    </div>
+
+    <div class="tab-panel hidden" data-panel="completion">
+      <label class="check"><input id="pgOpenWhenDone" type="checkbox" /> Open file when done</label>
+    </div>
+
+    <div class="dlg-actions">
+      <button id="pgDetails" class="ghost">Hide details</button>
+      <button id="pgPause">Pause</button>
+      <button id="pgClose" class="ghost">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<div id="ctxMenu" class="ctx hidden"></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

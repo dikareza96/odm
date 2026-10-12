@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "ODM Integration",
+  "version": "1.0.0",
+  "description": "Send browser downloads to Ochi Download Manager.",
+  "permissions": ["downloads", "contextMenus", "storage", "nativeMessaging", "cookies"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "ODM", "default_popup": "popup.html" }
+}

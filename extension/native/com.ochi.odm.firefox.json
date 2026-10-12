@@ -1,0 +1,7 @@
+{
+  "name": "com.ochi.odm",
+  "description": "Ochi Download Manager native messaging host",
+  "path": "C:\\path\\to\\ODM.exe",
+  "type": "stdio",
+  "allowed_extensions": ["odm@ochi.local"]
+}
