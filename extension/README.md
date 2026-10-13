@@ -59,6 +59,30 @@ to ODM on this computer). The Chromium manifest drops the Firefox-only keys.
 
 ## 3. Use it
 
-Keep ODM running, then click a file link (ODM takes over matching download
-types) or right-click a link/video → **Download with ODM**. The popup toggles
-takeover and tests the connection.
+Keep ODM running, then:
+
+- **Click a file link.** Downloads whose type is in ODM's *Options → File
+  types* go to ODM, which opens a *New Download* window to confirm (turn it
+  off in *Options → Downloads*). Sites listed there under "leaves downloads
+  from these sites alone" are skipped. **Alt-click** a link to let the
+  browser download it this once. If ODM cannot be reached, the browser keeps
+  the download.
+- **Click "Download this video"** over a player. The button appears when the
+  page loads a video or audio file of at least 512 KB; with several, it
+  lists them. HLS/DASH streams are listed but cannot be downloaded yet.
+- **Right-click** a link, video, audio or image → **Download with ODM**.
+
+The popup toggles takeover and tests the connection.
+
+With each hand-off the extension sends ODM the URL, the page it came from,
+the page title, the browser's user agent and the site's cookies for that URL,
+so downloads that need a signed-in session work. Everything stays on this
+computer: it goes to ODM over native messaging, not to any server.
+
+### Troubleshooting
+
+- **No video button in Firefox:** open `about:addons` → ODM Integration →
+  *Permissions* and allow access to all websites. Firefox 127 and later grant
+  it at install, but it can be revoked there.
+- **Downloads stay in the browser:** run `ODM.exe -register-browser` again
+  (for example after moving ODM) and restart the browser.

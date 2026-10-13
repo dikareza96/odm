@@ -218,7 +218,18 @@ func main() {
 	// Any build with the desktop UI compiled in uses it; only headless builds
 	// fall back to the browser page.
 	if ui.Available && *open && !*noUI {
-		if err := ui.Run(ctx, mgr, ui.Options{Show: showUI, Hidden: *hidden}); err != nil {
+		// Browser hand-offs open the New Download window. The hook exists
+		// only while the window runs; headless ODM adds them directly.
+		promptUI := make(chan engine.AddOptions, 16)
+		srv.OnPrompt = func(o engine.AddOptions) bool {
+			select {
+			case promptUI <- o:
+				return true
+			default: // a burst of hand-offs: add the rest directly
+				return false
+			}
+		}
+		if err := ui.Run(ctx, mgr, ui.Options{Show: showUI, Prompt: promptUI, Hidden: *hidden}); err != nil {
 			log.Println("ui:", err)
 		}
 		stopServers()

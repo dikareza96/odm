@@ -45,6 +45,32 @@ func dash(s string) string {
 /* ---------- Add: "New Download" ---------- */
 
 func (a *application) openAddDialog() {
+	var dlg *dialog.CustomDialog
+	content, buttons := a.newAddForm(a.win, engine.AddOptions{}, func() { dlg.Hide() })
+	dlg = dialog.NewCustomWithoutButtons("New Download", content, a.win)
+	dlg.SetButtons(buttons)
+	dlg.Resize(fyne.NewSize(620, 1)) // height clamps to content: no empty band above the buttons
+	dlg.Show()
+}
+
+// openAddWindow shows the New Download form in its own window, prefilled,
+// for a download handed over by the browser. A separate window (rather than
+// a dialog on the main window) works while ODM sits hidden in the tray.
+func (a *application) openAddWindow(pre engine.AddOptions) {
+	w := a.fyneApp.NewWindow("New Download")
+	content, buttons := a.newAddForm(w, pre, w.Close)
+	w.SetContent(container.New(layout.NewCustomPaddedLayout(8, 10, 10, 10),
+		container.NewBorder(nil, container.NewHBox(layout.NewSpacer(), container.NewHBox(buttons...)), nil, nil, content)))
+	w.Resize(fyne.NewSize(640, 1))
+	w.Show()
+	w.RequestFocus()
+}
+
+// newAddForm builds the New Download form and its buttons. pre prefills it;
+// pre.Headers (cookies, referrer, user agent from the browser) are used for
+// the size probe and kept for the download, since many servers refuse a
+// request without them. done closes whatever hosts the form.
+func (a *application) newAddForm(parent fyne.Window, pre engine.AddOptions, done func()) (fyne.CanvasObject, []fyne.CanvasObject) {
 	settings := a.mgr.Settings()
 
 	urlEntry := widget.NewEntry()
@@ -54,7 +80,15 @@ func (a *application) openAddDialog() {
 	folderEntry := widget.NewEntry()
 	folderEntry.SetText(settings.Dir)
 	nameEntry := widget.NewEntry()
+	nameEntry.SetText(pre.FileName)
+	if pre.FileName != "" {
+		catSelect.SetSelected(engine.Category(pre.FileName))
+	}
+	if pre.Category != "" {
+		catSelect.SetSelected(pre.Category)
+	}
 	descEntry := widget.NewEntry()
+	descEntry.SetText(pre.Description)
 	connEntry := widget.NewEntry()
 	connEntry.SetText(fmt.Sprint(settings.Connections))
 	queueSelect := widget.NewSelect(a.mgr.Queues(), nil)
@@ -74,7 +108,7 @@ func (a *application) openAddDialog() {
 		probeTimer = time.AfterFunc(600*time.Millisecond, func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			p, err := a.mgr.Probe(ctx, s, nil)
+			p, err := a.mgr.Probe(ctx, s, pre.Headers)
 			fyne.Do(func() {
 				if err != nil {
 					infoLabel.SetText(err.Error())
@@ -87,11 +121,12 @@ func (a *application) openAddDialog() {
 				infoLabel.SetText(info)
 				if nameEntry.Text == "" {
 					nameEntry.SetText(p.FileName)
+					catSelect.SetSelected(engine.Category(p.FileName))
 				}
-				catSelect.SetSelected(engine.Category(p.FileName))
 			})
 		})
 	}
+	urlEntry.SetText(pre.URL) // after OnChanged, so a prefilled URL is probed
 
 	browseButton := widget.NewButtonWithIcon("Browse…", theme.FolderOpenIcon(), func() {
 		dialog.NewFolderOpen(func(dir fyne.ListableURI, err error) {
@@ -99,7 +134,7 @@ func (a *application) openAddDialog() {
 				return
 			}
 			folderEntry.SetText(dir.Path())
-		}, a.win).Show()
+		}, parent).Show()
 	})
 	folderRow := container.NewBorder(nil, nil, nil, browseButton, folderEntry)
 
@@ -113,9 +148,6 @@ func (a *application) openAddDialog() {
 		widget.NewFormItem("Queue", queueSelect),
 		widget.NewFormItem("File info", infoLabel),
 	)
-	content := form
-
-	dlg := dialog.NewCustomWithoutButtons("New Download", content, a.win)
 
 	var create func(start, confirmed bool)
 	create = func(start, confirmed bool) {
@@ -126,20 +158,21 @@ func (a *application) openAddDialog() {
 			return
 		}
 		if existing, dup := a.mgr.FindByURL(url); dup && !confirmed {
-			a.askDuplicate(existing, func() { create(start, true) })
+			a.askDuplicate(parent, existing, func() { create(start, true) })
 			return
 		}
 		info := a.mgr.Create(engine.AddOptions{
 			URL:         url,
 			Dir:         strings.TrimSpace(folderEntry.Text),
-			FileName:    strings.TrimSpace(nameEntry.Text),
+			FileName:    engine.SanitizeName(nameEntry.Text),
 			Description: strings.TrimSpace(descEntry.Text),
 			Connections: conns,
 			Category:    catSelect.Selected,
 			Queue:       queueSelect.Selected,
+			Headers:     pre.Headers,
 			Start:       start,
 		})
-		dlg.Hide()
+		done()
 		a.refresh()
 		if start {
 			a.autoProgress(info.ID)
@@ -149,10 +182,8 @@ func (a *application) openAddDialog() {
 	startBtn := widget.NewButtonWithIcon("Start Download", theme.ConfirmIcon(), func() { create(true, false) })
 	startBtn.Importance = widget.HighImportance
 	laterBtn := widget.NewButtonWithIcon("Download Later", theme.ContentAddIcon(), func() { create(false, false) })
-	cancelBtn := widget.NewButton("Cancel", func() { dlg.Hide() })
-	dlg.SetButtons([]fyne.CanvasObject{laterBtn, cancelBtn, startBtn})
-	dlg.Resize(fyne.NewSize(620, 1)) // height clamps to content: no empty band above the buttons
-	dlg.Show()
+	cancelBtn := widget.NewButton("Cancel", done)
+	return form, []fyne.CanvasObject{laterBtn, cancelBtn, startBtn}
 }
 
 /* ---------- Options ---------- */
@@ -273,6 +304,12 @@ func (a *application) openOptionsTab(tab int) {
 	)
 
 	// Downloads
+	startCheck := widget.NewCheck("Show the New Download window for downloads from the browser", nil)
+	startCheck.SetChecked(!settings.NoStartDialog)
+	excludeEntry := widget.NewMultiLineEntry()
+	excludeEntry.SetText(strings.Join(settings.ExcludeSites, " "))
+	excludeEntry.SetPlaceHolder("*.update.microsoft.com example.org")
+	excludeEntry.SetMinRowsVisible(2)
 	progCheck := widget.NewCheck("Show the progress window when a download starts", nil)
 	progCheck.SetChecked(!settings.NoProgressDialog)
 	doneCheck := widget.NewCheck("Show the download complete dialog", nil)
@@ -292,6 +329,7 @@ func (a *application) openOptionsTab(tab int) {
 	uaEntry.SetPlaceHolder(engine.DefaultUserAgent)
 	downloadsTab := container.NewVBox(
 		header("Default download settings"),
+		startCheck,
 		progCheck,
 		doneCheck,
 		hint("These settings do not apply to queue processing."),
@@ -302,6 +340,10 @@ func (a *application) openOptionsTab(tab int) {
 		widget.NewSeparator(),
 		widget.NewLabel("User-Agent for downloads:"),
 		uaEntry,
+		widget.NewSeparator(),
+		widget.NewLabel("The browser extension leaves downloads from these sites alone:"),
+		excludeEntry,
+		hint("Separate names by spaces. A leading *. matches subdomains."),
 	)
 
 	// Connection
@@ -623,6 +665,8 @@ func (a *application) openOptionsTab(tab int) {
 		next.NoUpdateCheck = !updCheck.Checked
 		next.NoCloseToTray = !trayCheck.Checked
 		next.NoProgressDialog = !progCheck.Checked
+		next.NoStartDialog = !startCheck.Checked
+		next.ExcludeSites = strings.Fields(strings.ReplaceAll(excludeEntry.Text, ",", " "))
 		next.NoCompleteDialog = !doneCheck.Checked
 		next.FileTypes = parseFileTypes(typesEntry.Text)
 		next.CategoryDirs = cleanDirs
@@ -679,7 +723,7 @@ func parseFileTypes(s string) []string {
 // askDuplicate tells the user the address is already in the list and lets
 // them show that entry, download it again (it gets a numbered file name),
 // or cancel.
-func (a *application) askDuplicate(existing engine.Info, again func()) {
+func (a *application) askDuplicate(parent fyne.Window, existing engine.Info, again func()) {
 	msg := widget.NewLabel(fmt.Sprintf("This address is already in the list as %q (%s).\n"+
 		"Downloading it again saves it under a numbered name.", existing.FileName, statusText(existing)))
 	msg.Wrapping = fyne.TextWrapWord
@@ -690,7 +734,7 @@ func (a *application) askDuplicate(existing engine.Info, again func()) {
 	})
 	dl := widget.NewButton("Download again", func() { dlg.Hide(); again() })
 	dl.Importance = widget.HighImportance
-	dlg = dialog.NewCustomWithoutButtons("Duplicate download", msg, a.win)
+	dlg = dialog.NewCustomWithoutButtons("Duplicate download", msg, parent)
 	dlg.SetButtons([]fyne.CanvasObject{widget.NewButton("Cancel", func() { dlg.Hide() }), show, dl})
 	dlg.Resize(fyne.NewSize(460, 1))
 	dlg.Show()

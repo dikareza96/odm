@@ -8,6 +8,17 @@ All notable changes to ODM are documented here. The format is based on
 
 ### Added
 
+- "Download this video" button over video players: the extension notes video
+  and audio files the page loads (512 KB and up, Google video byte-range
+  requests turned back into the whole file) and hands the chosen one to ODM
+  named after the page title. HLS/DASH streams are listed as unsupported.
+- Downloads handed over by the browser open a New Download window (its own
+  window, so it works while ODM is in the tray) prefilled with the name,
+  cookies, referrer and user agent, which are also used for the size probe.
+  *Options → Downloads* can turn it off.
+- The extension reads its file types and a new "leave these sites alone"
+  list from ODM's Options; Alt-click lets the browser download a link.
+
 - Releases include the browser extension: `odm-extension-chromium.zip` for
   Chrome, Edge, Brave and Opera (load unpacked) and a Mozilla-signed
   `odm-extension-firefox.xpi` (unsigned on pre-releases).
@@ -22,6 +33,11 @@ All notable changes to ODM are documented here. The format is based on
 
 ### Fixed
 
+- A download the extension took over was lost when ODM was closed or not
+  registered: the browser's copy was cancelled before ODM confirmed. It is
+  now paused, then cancelled only after ODM accepts, and resumed otherwise.
+- The Add dialog probed the size without the download's headers, so sites
+  needing cookies or a referrer showed an error instead of the size.
 - The extension did not run in Firefox at all: its manifest only had
   `background.service_worker`, which Firefox does not support. The Firefox
   package uses `background.scripts`.

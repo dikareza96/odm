@@ -23,14 +23,28 @@ type Message struct {
 	Headers     map[string]string `json:"headers"`
 	Connections int               `json:"connections"`
 	Dir         string            `json:"dir"`
+	// Hints the browser has: the page title (a better name for media than
+	// "videoplayback"), MIME type, size and the browser's user agent.
+	Title     string `json:"title"`
+	Mime      string `json:"mime"`
+	Size      int64  `json:"size"`
+	UserAgent string `json:"userAgent"`
 }
 
 // Reply is the response sent back to the extension.
 type Reply struct {
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
-	ID      string `json:"id,omitempty"`
-	Message string `json:"message,omitempty"`
+	OK      bool    `json:"ok"`
+	Error   string  `json:"error,omitempty"`
+	ID      string  `json:"id,omitempty"`
+	Message string  `json:"message,omitempty"`
+	Config  *Config `json:"config,omitempty"`
+}
+
+// Config is what the extension needs from ODM's settings, answered to a
+// "config" message so the takeover list is edited in one place.
+type Config struct {
+	FileTypes    []string `json:"fileTypes"`
+	ExcludeSites []string `json:"excludeSites"`
 }
 
 // ReadMessage reads one framed message.

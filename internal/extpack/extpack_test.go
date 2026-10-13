@@ -3,9 +3,14 @@ package extpack
 import (
 	"archive/zip"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"testing"
+
+	"odm/internal/engine"
 )
 
 func TestManifestVersion(t *testing.T) {
@@ -80,15 +85,37 @@ func TestBuildFromRepoExtension(t *testing.T) {
 		for _, f := range files {
 			has[f] = true
 		}
-		for _, want := range []string{"manifest.json", "background.js", "popup.html", "popup.js"} {
+		for _, want := range []string{"manifest.json", "background.js", "content.js", "popup.html", "popup.js"} {
 			if !has[want] {
 				t.Fatalf("archive misses %s: %v", want, files)
 			}
 		}
 		for _, f := range files {
-			if f == "README.md" || filepath.Dir(f) == "native" {
+			if f == "README.md" || filepath.Dir(f) == "native" || filepath.Dir(f) == "test" {
 				t.Fatalf("archive ships %s, which is not part of the extension", f)
 			}
 		}
+	}
+}
+
+// The extension's fallback type list must match ODM's built-in list, or the
+// takeover would change depending on whether ODM was reachable.
+func TestExtensionDefaultTypesMatchODM(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "extension", "background.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)const DEFAULT_TYPES = \[(.*?)\];`).FindSubmatch(src)
+	if m == nil {
+		t.Fatal("DEFAULT_TYPES not found in background.js")
+	}
+	got := regexp.MustCompile(`"([a-z0-9]+)"`).FindAllSubmatch(m[1], -1)
+	var js []string
+	for _, g := range got {
+		js = append(js, string(g[1]))
+	}
+	want := engine.DefaultFileTypes()
+	if strings.Join(js, ",") != strings.Join(want, ",") {
+		t.Fatalf("background.js DEFAULT_TYPES differ from engine.DefaultFileTypes:\n js:  %v\n odm: %v", js, want)
 	}
 }

@@ -15,6 +15,7 @@ const Available = false
 // Options mirrors the desktop build's Run options.
 type Options struct {
 	Show   <-chan struct{}
+	Prompt <-chan engine.AddOptions
 	Hidden bool
 }
 

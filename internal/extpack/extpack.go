@@ -27,7 +27,7 @@ const (
 )
 
 // skip lists source entries that are not part of the shipped extension.
-var skip = map[string]bool{"manifest.json": true, "README.md": true, "native": true}
+var skip = map[string]bool{"manifest.json": true, "README.md": true, "native": true, "test": true}
 
 var versionRe = regexp.MustCompile(`^\d+(\.\d+){0,3}$`)
 

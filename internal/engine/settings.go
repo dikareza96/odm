@@ -91,6 +91,12 @@ type Settings struct {
 	// grabber, API) does with a URL already in the list: DuplicateSkip or
 	// DuplicateAgain. The Add dialog always asks instead.
 	DuplicateAuto string `json:"duplicate_auto,omitempty"`
+	// NoStartDialog skips the New Download window for downloads handed over
+	// by the browser (negative so the window is shown by default).
+	NoStartDialog bool `json:"no_start_dialog,omitempty"`
+	// ExcludeSites are host patterns ("*.example.com", "example.org") the
+	// browser extension leaves alone.
+	ExcludeSites []string `json:"exclude_sites,omitempty"`
 	// NoUpdateCheck is phrased negatively so settings files written before
 	// the option existed keep the default: check for updates at start-up.
 	NoUpdateCheck bool `json:"no_update_check,omitempty"`
@@ -168,6 +174,13 @@ func (s *Settings) normalize(fallbackDir string) {
 		s.HostConnections[key] = n
 	}
 	s.UserAgent = strings.TrimSpace(s.UserAgent)
+	var sites []string
+	for _, p := range s.ExcludeSites {
+		if p = strings.ToLower(strings.TrimSpace(p)); p != "" {
+			sites = append(sites, p)
+		}
+	}
+	s.ExcludeSites = sites
 	if s.DuplicateAuto != DuplicateAgain {
 		s.DuplicateAuto = DuplicateSkip
 	}

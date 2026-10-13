@@ -48,7 +48,12 @@ queues. It runs as a desktop app, or headless with a JSON API.
 
 **Integration**
 - A browser extension (Chrome, Edge, Firefox) hands downloads to ODM through
-  native messaging. ODM can register itself with each browser.
+  native messaging, and opens them in a *New Download* window where you
+  choose the folder and name. ODM can register itself with each browser.
+- A **Download this video** button appears over a video player when the
+  extension sees the page load a video or audio file. It names the file
+  after the page title. Streams split into many segments (HLS/DASH) are not
+  supported yet. DRM-protected video is not supported and never will be.
 - A clipboard monitor queues downloadable URLs you copy. You can turn it on
   or off at any time.
 

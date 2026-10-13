@@ -21,58 +21,95 @@ func runNativeHost(configDir string) {
 	if path == "" {
 		path = ipc.SocketPath(configDir)
 	}
-	base := ipc.BaseURL
 	client := ipc.Client(path, 10*time.Second)
 
 	err := native.Serve(os.Stdin, os.Stdout, func(m native.Message) native.Reply {
 		switch m.Type {
 		case "ping":
 			return native.Reply{OK: true, Message: "odm"}
+		case "config":
+			return relayConfig(client)
 		case "", "download":
-			if m.URL == "" {
-				return native.Reply{Error: "missing url"}
-			}
-			headers := map[string]string{}
-			for k, v := range m.Headers {
-				headers[k] = v
-			}
-			if m.Referrer != "" {
-				headers["Referer"] = m.Referrer
-			}
-			if m.Cookies != "" {
-				headers["Cookie"] = m.Cookies
-			}
-			payload := map[string]any{
-				"url":         m.URL,
-				"dir":         m.Dir,
-				"connections": m.Connections,
-			}
-			if len(headers) > 0 {
-				payload["headers"] = headers
-			}
-			body, _ := json.Marshal(payload)
-			resp, err := client.Post(base+"/api/downloads", "application/json", bytes.NewReader(body))
-			if err != nil {
-				return native.Reply{Error: "ODM is not running"}
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode >= 300 {
-				return native.Reply{Error: fmt.Sprintf("ODM returned %s", resp.Status)}
-			}
-			var info struct {
-				ID       string `json:"id"`
-				FileName string `json:"file_name"`
-			}
-			_ = json.NewDecoder(resp.Body).Decode(&info)
-			msg := "queued"
-			if resp.StatusCode == http.StatusOK { // 200, not 201: it was already in the list
-				msg = "already in the list"
-			}
-			return native.Reply{OK: true, ID: info.ID, Message: msg}
+			return relayDownload(client, m)
 		}
 		return native.Reply{Error: "unknown message type: " + m.Type}
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "odm native host:", err)
 	}
+}
+
+// relayDownload hands a browser download to ODM. The extension cancels the
+// browser's own download only when this replies OK, so every failure must
+// come back as an error rather than a silent success.
+func relayDownload(client *http.Client, m native.Message) native.Reply {
+	if m.URL == "" {
+		return native.Reply{Error: "missing url"}
+	}
+	headers := map[string]string{}
+	for k, v := range m.Headers {
+		headers[k] = v
+	}
+	if m.Referrer != "" {
+		headers["Referer"] = m.Referrer
+	}
+	if m.Cookies != "" {
+		headers["Cookie"] = m.Cookies
+	}
+	// Some servers only answer the browser that started the session.
+	if m.UserAgent != "" {
+		headers["User-Agent"] = m.UserAgent
+	}
+	payload := map[string]any{
+		"url":         m.URL,
+		"dir":         m.Dir,
+		"connections": m.Connections,
+		"file_name":   native.SuggestName(m.Filename, m.Title, m.Mime),
+		"prompt":      true, // a person clicked this in the browser
+	}
+	if len(headers) > 0 {
+		payload["headers"] = headers
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := client.Post(ipc.BaseURL+"/api/downloads", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return native.Reply{Error: "ODM is not running"}
+	}
+	defer resp.Body.Close()
+	var info struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&info)
+	switch resp.StatusCode {
+	case http.StatusAccepted:
+		return native.Reply{OK: true, Message: "opened in ODM"}
+	case http.StatusCreated:
+		return native.Reply{OK: true, ID: info.ID, Message: "queued"}
+	case http.StatusOK:
+		return native.Reply{OK: true, ID: info.ID, Message: "already in the list"}
+	}
+	return native.Reply{Error: fmt.Sprintf("ODM returned %s", resp.Status)}
+}
+
+// relayConfig returns the settings the extension applies itself.
+func relayConfig(client *http.Client) native.Reply {
+	resp, err := client.Get(ipc.BaseURL + "/api/settings")
+	if err != nil {
+		return native.Reply{Error: "ODM is not running"}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return native.Reply{Error: fmt.Sprintf("ODM returned %s", resp.Status)}
+	}
+	var st struct {
+		FileTypes    []string `json:"file_types"`
+		ExcludeSites []string `json:"exclude_sites"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return native.Reply{Error: "unreadable settings: " + err.Error()}
+	}
+	if st.ExcludeSites == nil {
+		st.ExcludeSites = []string{}
+	}
+	return native.Reply{OK: true, Config: &native.Config{FileTypes: st.FileTypes, ExcludeSites: st.ExcludeSites}}
 }

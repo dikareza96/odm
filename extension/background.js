@@ -1,25 +1,144 @@
-// ODM Integration — routes browser downloads to Ochi Download Manager through
-// the native-messaging host (ODM.exe -native-messaging).
+// ODM Integration: hands browser downloads and detected videos to Ochi
+// Download Manager through native messaging. The pure helpers at the top
+// carry no browser state, so extension/test/ runs them under Node.
 
 const HOST = "com.ochi.odm";
-const FILE_RE = /\.(zip|rar|7z|tar|gz|xz|bz2|zst|exe|msi|dmg|pkg|deb|rpm|apk|iso|img|vhd|mp4|mkv|avi|mov|webm|flv|m4v|wmv|mp3|m4a|aac|flac|wav|ogg|pdf|epub|doc|docx|xls|xlsx|ppt|pptx|csv|txt|bin|torrent)$/i;
 
-let port = null;
+// Used until ODM answers a "config" message (ODM not running yet, or an
+// older ODM): the same built-in list ODM ships with.
+const DEFAULT_TYPES = [
+  "3gp", "7z", "aac", "aiff", "apk", "appx", "avi", "bat", "bmp", "bz2", "csv", "deb", "dmg",
+  "doc", "docx", "epub", "exe", "flac", "flv", "gif", "gz", "heic", "ico", "img", "iso", "jpeg",
+  "jpg", "m4a", "m4v", "mkv", "mov", "mp3", "mp4", "mpeg", "mpg", "msi", "mts", "odt", "ogg",
+  "opus", "pdf", "pkg", "png", "ppt", "pptx", "rar", "rpm", "rtf", "sh", "svg", "tar", "tiff",
+  "ts", "txt", "vhd", "vob", "wav", "webm", "webp", "wma", "wmv", "xls", "xlsx", "xz", "zip", "zst",
+];
 
-function connect() {
-  if (port) return port;
-  port = chrome.runtime.connectNative(HOST);
-  port.onDisconnect.addListener(() => { port = null; });
-  return port;
+// Smaller media responses are ads, previews or interface sounds.
+const MIN_MEDIA_BYTES = 512 * 1024;
+const CONFIG_TTL_MS = 5 * 60 * 1000;
+const MAX_MEDIA_PER_TAB = 15;
+const BYPASS_MS = 10 * 1000;
+
+const STREAM_TYPES = [
+  "application/vnd.apple.mpegurl", "application/x-mpegurl", "audio/mpegurl", "audio/x-mpegurl",
+  "application/dash+xml",
+];
+const MEDIA_EXT = /\.(mp4|m4v|webm|mkv|mov|flv|mp3|m4a|aac|ogg|opus|flac|wav)$/i;
+
+/* ---------- pure helpers ---------- */
+
+function urlExt(url) {
+  try {
+    const m = /\.([a-z0-9]{1,8})$/i.exec(new URL(url).pathname);
+    return m ? m[1].toLowerCase() : "";
+  } catch {
+    return "";
+  }
 }
 
-function sendToOdm(payload) {
+// hasType reports whether url (or the browser's file name) ends in one of
+// types, given without dots.
+function hasType(url, types, filename) {
+  const set = new Set(types.map((t) => String(t).toLowerCase().replace(/^\./, "")));
+  const fromName = /\.([a-z0-9]{1,8})$/i.exec(filename || "");
+  return set.has(urlExt(url)) || (fromName !== null && set.has(fromName[1].toLowerCase()));
+}
+
+// hostMatches: "example.org" matches that host; "*.example.org" matches it
+// and every subdomain.
+function hostMatches(host, pattern) {
+  host = String(host).toLowerCase();
+  pattern = String(pattern).toLowerCase().trim();
+  if (!pattern) return false;
+  if (pattern.startsWith("*.")) {
+    const base = pattern.slice(2);
+    return host === base || host.endsWith("." + base);
+  }
+  return host === pattern;
+}
+
+function isExcluded(url, patterns) {
   try {
-    connect().postMessage(payload);
-    return true;
-  } catch (e) {
+    const host = new URL(url).hostname;
+    return (patterns || []).some((p) => hostMatches(host, p));
+  } catch {
     return false;
   }
+}
+
+// mediaKind classifies a response: "stream" for HLS/DASH playlists (not
+// downloadable as one file yet), "file" for a single audio/video file,
+// null for anything else.
+function mediaKind(url, mime) {
+  mime = String(mime || "").split(";")[0].trim().toLowerCase();
+  let path = "";
+  try {
+    path = new URL(url).pathname.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (STREAM_TYPES.includes(mime) || path.endsWith(".m3u8") || path.endsWith(".mpd")) return "stream";
+  if (mime === "video/mp2t" || path.endsWith(".ts")) return null; // HLS segments, not whole files
+  if (mime.startsWith("video/") || mime.startsWith("audio/")) return "file";
+  if (MEDIA_EXT.test(path) && (mime === "" || mime === "application/octet-stream")) return "file";
+  return null;
+}
+
+// normalizeMediaURL turns a player's partial request into the whole file.
+// Google's video hosts take the byte range as query parameters; without
+// them the same URL serves the complete file.
+function normalizeMediaURL(url) {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    if (u.hostname.endsWith(".googlevideo.com")) {
+      for (const p of ["range", "rn", "rbuf"]) u.searchParams.delete(p);
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+// totalSize reads the full size from Content-Range ("bytes 0-99/1234") or,
+// for a whole response, Content-Length. 0 when unknown.
+function totalSize(headers) {
+  const get = (name) => {
+    const h = (headers || []).find((x) => x.name.toLowerCase() === name);
+    return h ? h.value : "";
+  };
+  const range = /\/(\d+)\s*$/.exec(get("content-range"));
+  if (range) return Number(range[1]);
+  const len = Number(get("content-length"));
+  return Number.isFinite(len) && len > 0 ? len : 0;
+}
+
+// mergeMedia adds item to list (deduplicated by URL, keeping the larger
+// known size), newest first, capped.
+function mergeMedia(list, item) {
+  const rest = (list || []).filter((x) => x.url !== item.url);
+  const old = (list || []).find((x) => x.url === item.url);
+  if (old && old.size > item.size) item = { ...item, size: old.size };
+  return [item, ...rest].slice(0, MAX_MEDIA_PER_TAB);
+}
+
+/* ---------- browser side ---------- */
+
+function askOdm(message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendNativeMessage(HOST, message, (reply) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          resolve(reply || { ok: false, error: "no reply from ODM" });
+        }
+      });
+    } catch (e) {
+      resolve({ ok: false, error: String(e) });
+    }
+  });
 }
 
 async function isEnabled() {
@@ -27,32 +146,136 @@ async function isEnabled() {
   return enabled;
 }
 
-function looksDownloadable(url) {
+async function getConfig() {
+  const { odmConfig } = await chrome.storage.session.get("odmConfig");
+  if (odmConfig && Date.now() - odmConfig.at < CONFIG_TTL_MS) return odmConfig;
+  const reply = await askOdm({ type: "config" });
+  const cfg = reply.ok && reply.config
+    ? { fileTypes: reply.config.fileTypes || DEFAULT_TYPES, excludeSites: reply.config.excludeSites || [], at: Date.now() }
+    : { fileTypes: DEFAULT_TYPES, excludeSites: [], at: 0 }; // retry next time
+  await chrome.storage.session.set({ odmConfig: cfg });
+  return cfg;
+}
+
+async function cookieHeader(url) {
   try {
-    return FILE_RE.test(new URL(url).pathname);
+    const cookies = await chrome.cookies.getAll({ url });
+    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
   } catch {
-    return false;
+    return "";
   }
 }
 
-chrome.downloads.onCreated.addListener(async (item) => {
-  if (!(await isEnabled())) return;
-  if (!item.url || !item.url.startsWith("http")) return;
-  if (!looksDownloadable(item.url)) return;
-  if (sendToOdm({ type: "download", url: item.url, referrer: item.referrer || "" })) {
-    chrome.downloads.cancel(item.id, () => chrome.downloads.erase({ id: item.id }));
-  }
-});
-
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "odm-download",
-    title: "Download with ODM",
-    contexts: ["link", "video", "audio", "image"],
+async function handOff(fields) {
+  return askOdm({
+    type: "download",
+    cookies: await cookieHeader(fields.url),
+    userAgent: navigator.userAgent,
+    ...fields,
   });
-});
+}
 
-chrome.contextMenus.onClicked.addListener((info) => {
-  const url = info.linkUrl || info.srcUrl;
-  if (url) sendToOdm({ type: "download", url, referrer: info.pageUrl || "" });
-});
+const tabKey = (tabId) => `media:${tabId}`;
+
+async function tabMedia(tabId) {
+  const key = tabKey(tabId);
+  return (await chrome.storage.session.get(key))[key] || [];
+}
+
+if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
+  // Listeners are registered synchronously at load, as both a Chromium
+  // service worker and a Firefox event page require.
+
+  chrome.downloads.onCreated.addListener(async (item) => {
+    if (!(await isEnabled())) return;
+    const url = item.finalUrl || item.url;
+    if (!url || !/^https?:/.test(url)) return;
+    const { bypass = {} } = await chrome.storage.session.get("bypass");
+    if (bypass[url] && Date.now() - bypass[url] < BYPASS_MS) return; // Alt-click
+    const cfg = await getConfig();
+    if (isExcluded(url, cfg.excludeSites) || !hasType(url, cfg.fileTypes, item.filename)) return;
+
+    // Hold the browser's copy until ODM confirms; it used to be cancelled
+    // first, so with ODM closed or unregistered the download was lost.
+    try { await chrome.downloads.pause(item.id); } catch { /* may already be done */ }
+    const reply = await handOff({
+      url, referrer: item.referrer || "", filename: item.filename || "",
+      mime: item.mime || "", size: item.totalBytes > 0 ? item.totalBytes : 0,
+    });
+    if (reply.ok) {
+      chrome.downloads.cancel(item.id, () => chrome.downloads.erase({ id: item.id }));
+    } else {
+      try { await chrome.downloads.resume(item.id); } catch { /* finished meanwhile */ }
+    }
+  });
+
+  chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({
+      id: "odm-download",
+      title: "Download with ODM",
+      contexts: ["link", "video", "audio", "image"],
+    });
+  });
+
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    const url = info.linkUrl || info.srcUrl;
+    if (url && /^https?:/.test(url)) {
+      handOff({ url, referrer: info.pageUrl || "", title: (tab && tab.title) || "" });
+    }
+  });
+
+  chrome.webRequest.onHeadersReceived.addListener(
+    (d) => {
+      if (d.tabId < 0 || (d.statusCode !== 200 && d.statusCode !== 206)) return;
+      const ct = (d.responseHeaders || []).find((h) => h.name.toLowerCase() === "content-type");
+      const mime = ct ? ct.value.split(";")[0].trim().toLowerCase() : "";
+      const kind = mediaKind(d.url, mime);
+      if (!kind) return;
+      const size = totalSize(d.responseHeaders);
+      if (kind === "file" && size > 0 && size < MIN_MEDIA_BYTES) return;
+      const item = { url: normalizeMediaURL(d.url), mime, size, kind, frameId: d.frameId };
+      tabMedia(d.tabId).then(async (list) => {
+        const next = mergeMedia(list, item);
+        await chrome.storage.session.set({ [tabKey(d.tabId)]: next });
+        const forFrame = next.filter((x) => x.frameId === d.frameId);
+        chrome.tabs.sendMessage(d.tabId, { type: "odm-media", items: forFrame }, { frameId: d.frameId })
+          .catch(() => { /* no content script in that frame (yet) */ });
+      });
+    },
+    { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
+    ["responseHeaders"],
+  );
+
+  // A new page in the tab starts a fresh media list.
+  chrome.tabs.onUpdated.addListener((tabId, change) => {
+    if (change.url) chrome.storage.session.remove(tabKey(tabId));
+  });
+  chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove(tabKey(tabId)));
+
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    const tab = sender.tab;
+    if (!tab) return false;
+    if (msg.type === "odm-media-request") {
+      tabMedia(tab.id).then((list) => sendResponse(list.filter((x) => x.frameId === sender.frameId)));
+      return true; // async response
+    }
+    if (msg.type === "odm-grab" && msg.item) {
+      handOff({
+        url: msg.item.url, referrer: sender.url || tab.url || "", title: tab.title || "",
+        mime: msg.item.mime || "", size: msg.item.size || 0,
+      }).then(sendResponse);
+      return true;
+    }
+    if (msg.type === "odm-bypass" && msg.url) {
+      chrome.storage.session.get("bypass").then(({ bypass = {} }) => {
+        bypass[msg.url] = Date.now();
+        chrome.storage.session.set({ bypass });
+      });
+    }
+    return false;
+  });
+}
+
+if (typeof module !== "undefined") {
+  module.exports = { hasType, hostMatches, isExcluded, mediaKind, normalizeMediaURL, totalSize, mergeMedia, DEFAULT_TYPES };
+}

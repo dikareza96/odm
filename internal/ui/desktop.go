@@ -35,6 +35,9 @@ type Options struct {
 	// Show receives a value whenever another ODM launch asks this one to
 	// bring its window forward.
 	Show <-chan struct{}
+	// Prompt receives downloads handed over by the browser, each opened in
+	// a New Download window for the person to confirm.
+	Prompt <-chan engine.AddOptions
 	// Hidden starts in the system tray (login autostart) when a tray exists.
 	Hidden bool
 }
@@ -74,6 +77,13 @@ func Run(ctx context.Context, mgr *engine.Manager, opts Options) error {
 		}, func(u string) {
 			mgr.AddAuto(engine.AddOptions{URL: u, Start: true})
 		})
+	}
+	if opts.Prompt != nil {
+		go func() {
+			for o := range opts.Prompt {
+				fyne.Do(func() { a.openAddWindow(o) })
+			}
+		}()
 	}
 	if opts.Show != nil {
 		go func() {

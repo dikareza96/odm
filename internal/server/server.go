@@ -24,6 +24,10 @@ type Server struct {
 	// OnShow, when set, brings the desktop window forward; a second ODM
 	// launch calls it over the control socket instead of starting twice.
 	OnShow func()
+	// OnPrompt, when set, shows the New Download window for a download the
+	// browser handed over, instead of adding it directly. It reports whether
+	// it took the request.
+	OnPrompt func(engine.AddOptions) bool
 
 	mu   sync.Mutex
 	subs map[chan []byte]struct{}
@@ -140,6 +144,9 @@ type addRequest struct {
 	FileName     string            `json:"file_name"`
 	Queue        string            `json:"queue"`
 	Description  string            `json:"description"`
+	// Prompt marks a request a person started in the browser: the desktop
+	// UI may confirm it in the New Download window (202) rather than add it.
+	Prompt bool `json:"prompt"`
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -157,16 +164,22 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	if req.Start != nil {
 		start = *req.Start
 	}
-	// Requests here come from the browser relay or scripts, so the
-	// duplicate policy for automatic adds applies.
-	info, added := s.mgr.AddAuto(engine.AddOptions{
+	opts := engine.AddOptions{
 		URL: req.URL, Dir: req.Dir, Connections: req.Connections, Headers: req.Headers,
 		SpeedLimit: req.SpeedLimit, Start: start, OpenWhenDone: req.OpenWhenDone,
 		Category:    strings.TrimSpace(req.Category),
 		FileName:    engine.SanitizeName(req.FileName),
 		Queue:       strings.TrimSpace(req.Queue),
 		Description: strings.TrimSpace(req.Description),
-	})
+	}
+	if req.Prompt && s.OnPrompt != nil && !s.mgr.Settings().NoStartDialog && s.OnPrompt(opts) {
+		// The person decides in the window (it also handles duplicates).
+		writeJSON(w, http.StatusAccepted, map[string]bool{"prompted": true})
+		return
+	}
+	// Requests here come from the browser relay or scripts, so the
+	// duplicate policy for automatic adds applies.
+	info, added := s.mgr.AddAuto(opts)
 	s.Broadcast()
 	status := http.StatusCreated
 	if !added {

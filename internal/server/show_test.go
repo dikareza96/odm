@@ -43,3 +43,33 @@ func TestAddReportsDuplicates(t *testing.T) {
 		t.Fatalf("duplicate add: %d, want 200 (already in the list)", c)
 	}
 }
+
+func TestBrowserAddPrompts(t *testing.T) {
+	mgr := engine.NewManager(engine.Settings{Dir: t.TempDir()}, "")
+	s := New(mgr)
+	h := s.Handler()
+	var prompted []engine.AddOptions
+	s.OnPrompt = func(o engine.AddOptions) bool { prompted = append(prompted, o); return true }
+	post := func(body string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/downloads", strings.NewReader(body)))
+		return w.Code
+	}
+
+	if c := post(`{"url":"http://h/v.mp4","file_name":"Ep 10.mp4","prompt":true,"headers":{"Cookie":"a=1"}}`); c != http.StatusAccepted {
+		t.Fatalf("prompted add: %d, want 202", c)
+	}
+	if len(prompted) != 1 || prompted[0].FileName != "Ep 10.mp4" || prompted[0].Headers["Cookie"] != "a=1" || len(mgr.List()) != 0 {
+		t.Fatalf("prompt got %+v, list %d", prompted, len(mgr.List()))
+	}
+	if c := post(`{"url":"http://h/api.zip","start":false}`); c != http.StatusCreated || len(prompted) != 1 {
+		t.Fatalf("script add without prompt: %d, prompts %d", c, len(prompted))
+	}
+
+	st := mgr.Settings()
+	st.NoStartDialog = true
+	mgr.UpdateSettings(st)
+	if c := post(`{"url":"http://h/direct.zip","prompt":true,"start":false}`); c != http.StatusCreated || len(prompted) != 1 {
+		t.Fatalf("dialog off: %d, prompts %d", c, len(prompted))
+	}
+}

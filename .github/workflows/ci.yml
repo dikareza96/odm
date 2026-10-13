@@ -16,6 +16,8 @@ jobs:
           go-version: "1.23"
           cache: true
       - run: go vet ./...
+      - name: Extension tests
+        run: node --test extension/test/*.test.js
       - run: go test ./...
       - name: Build CLI
         run: CGO_ENABLED=0 go build -o /tmp/odm ./cmd/odm
