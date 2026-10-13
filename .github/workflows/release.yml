@@ -69,7 +69,8 @@ jobs:
           cp "dist/${{ matrix.name }}" stage/
           cp README.md LICENSE stage/
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            (cd stage && zip -r "../odm-${{ matrix.label }}.zip" .)
+            # Git Bash on the Windows runner has no zip; PowerShell does.
+            pwsh -NoProfile -Command "Compress-Archive -Path stage/* -DestinationPath 'odm-${{ matrix.label }}.zip'"
           else
             tar -czf "odm-${{ matrix.label }}.tar.gz" -C stage .
           fi
