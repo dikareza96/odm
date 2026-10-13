@@ -53,7 +53,7 @@ type toolButtonRenderer struct {
 func (b *toolButton) CreateRenderer() fyne.WidgetRenderer {
 	r := &toolButtonRenderer{btn: b}
 	r.bg = canvas.NewRectangle(color.Transparent)
-	r.bg.CornerRadius = 8
+	r.bg.CornerRadius = 6
 	r.icon = canvas.NewImageFromResource(b.icon)
 	r.icon.FillMode = canvas.ImageFillContain
 	r.icon.ScaleMode = canvas.ImageScaleSmooth
@@ -67,21 +67,21 @@ func (b *toolButton) CreateRenderer() fyne.WidgetRenderer {
 
 func (r *toolButtonRenderer) Layout(size fyne.Size) {
 	r.bg.Resize(size)
-	const pad = float32(6)
-	iconSize := size.Height * 0.5
+	const pad = float32(4)
+	iconSize := size.Height * 0.48
 	r.icon.Move(fyne.NewPos(size.Width/2-iconSize/2, pad))
 	r.icon.Resize(fyne.NewSize(iconSize, iconSize))
-	top := pad + iconSize + 3
+	top := pad + iconSize + 2
 	r.label.Move(fyne.NewPos(0, top))
 	r.label.Resize(fyne.NewSize(size.Width, size.Height-top-pad))
 }
 
 func (r *toolButtonRenderer) MinSize() fyne.Size {
-	w := fyne.MeasureText(r.btn.text, theme.CaptionTextSize(), fyne.TextStyle{}).Width + 18
-	if w < 62 {
+	w := fyne.MeasureText(r.btn.text, theme.CaptionTextSize(), fyne.TextStyle{}).Width + 14
+	if w < 56 {
 		w = 62
 	}
-	return fyne.NewSize(w, 54)
+	return fyne.NewSize(w, 44)
 }
 
 func (r *toolButtonRenderer) Refresh() {
@@ -204,3 +204,70 @@ func (r *stripRenderer) Refresh() {
 func (r *stripRenderer) Objects() []fyne.CanvasObject { return r.objects }
 
 func (r *stripRenderer) Destroy() {}
+
+// miniBar is a slim progress bar used inside table rows so rows stay short.
+type miniBar struct {
+	widget.BaseWidget
+	mu sync.Mutex
+	v  float64
+}
+
+func newMiniBar() *miniBar {
+	b := &miniBar{}
+	b.ExtendBaseWidget(b)
+	return b
+}
+
+func (b *miniBar) set(v float64) {
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	b.mu.Lock()
+	b.v = v
+	b.mu.Unlock()
+	b.Refresh()
+}
+
+func (b *miniBar) MinSize() fyne.Size { return fyne.NewSize(60, 5) }
+
+func (b *miniBar) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvas.NewRectangle(odmPalette.scrollTrack)
+	bg.CornerRadius = 2
+	fill := canvas.NewRectangle(odmPalette.accent)
+	fill.CornerRadius = 2
+	return &miniBarRenderer{bar: b, bg: bg, fill: fill, objects: []fyne.CanvasObject{bg, fill}}
+}
+
+type miniBarRenderer struct {
+	bar     *miniBar
+	bg      *canvas.Rectangle
+	fill    *canvas.Rectangle
+	objects []fyne.CanvasObject
+}
+
+func (r *miniBarRenderer) Layout(size fyne.Size) {
+	r.bg.Resize(size)
+	r.bar.mu.Lock()
+	v := r.bar.v
+	r.bar.mu.Unlock()
+	if v >= 1 {
+		r.fill.FillColor = odmPalette.success
+	} else {
+		r.fill.FillColor = odmPalette.accent
+	}
+	r.fill.Resize(fyne.NewSize(size.Width*float32(v), size.Height))
+}
+
+func (r *miniBarRenderer) MinSize() fyne.Size { return fyne.NewSize(60, 5) }
+
+func (r *miniBarRenderer) Refresh() {
+	canvas.Refresh(r.bg)
+	canvas.Refresh(r.fill)
+}
+
+func (r *miniBarRenderer) Objects() []fyne.CanvasObject { return r.objects }
+
+func (r *miniBarRenderer) Destroy() {}

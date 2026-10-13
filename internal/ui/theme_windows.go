@@ -97,39 +97,39 @@ func (t odmTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) col
 func (t odmTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
 	case theme.SizeNamePadding:
-		return 6
+		return 3
 	case theme.SizeNameInnerPadding:
-		return 8
+		return 4
 	case theme.SizeNameInputRadius, theme.SizeNameButtonRadius:
-		return 8
+		return 5
 	case theme.SizeNameSelectionRadius:
-		return 6
+		return 4
 	case theme.SizeNameCardRadius:
-		return 10
+		return 8
 	case theme.SizeNameDialogRadius, theme.SizeNamePopupRadius, theme.SizeNameMenuRadius:
-		return 12
+		return 10
 	case theme.SizeNameInputBorder:
 		return 1
 	case theme.SizeNameSeparatorThickness:
 		return 1
 	case theme.SizeNameScrollBar:
-		return 10
+		return 8
 	case theme.SizeNameScrollBarSmall:
-		return 5
-	case theme.SizeNameScrollBarRadius:
-		return 5
-	case theme.SizeNameText:
-		return 13
-	case theme.SizeNameSubHeadingText:
-		return 15
-	case theme.SizeNameHeadingText:
-		return 18
-	case theme.SizeNameCaptionText:
-		return 11
-	case theme.SizeNameInlineIcon:
-		return 18
-	case theme.SizeNameLineSpacing:
 		return 4
+	case theme.SizeNameScrollBarRadius:
+		return 4
+	case theme.SizeNameText:
+		return 12
+	case theme.SizeNameSubHeadingText:
+		return 13
+	case theme.SizeNameHeadingText:
+		return 16
+	case theme.SizeNameCaptionText:
+		return 10
+	case theme.SizeNameInlineIcon:
+		return 16
+	case theme.SizeNameLineSpacing:
+		return 2
 	}
 	return t.Theme.Size(name)
 }

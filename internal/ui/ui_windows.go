@@ -143,7 +143,7 @@ func (a *application) build() {
 			return len(a.items), len(columnTitles)
 		},
 		func() fyne.CanvasObject {
-			return container.NewVBox(widget.NewLabel(""), widget.NewProgressBar())
+			return container.NewVBox(widget.NewLabel(""), newMiniBar())
 		},
 		a.updateCell,
 	)
@@ -420,7 +420,7 @@ func (a *application) openNewQueueDialog() {
 func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	box := o.(*fyne.Container)
 	lbl := box.Objects[0].(*widget.Label)
-	bar := box.Objects[1].(*widget.ProgressBar)
+	bar := box.Objects[1].(*miniBar)
 
 	a.mu.Lock()
 	if id.Row < 0 || id.Row >= len(a.items) {
@@ -434,7 +434,7 @@ func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 
 	if id.Col == colName && d.Total > 0 {
 		bar.Show()
-		bar.SetValue(d.Progress / 100)
+		bar.set(d.Progress / 100)
 	} else {
 		bar.Hide()
 	}
