@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+// Duplicate policies for automatic adds.
+const (
+	DuplicateSkip  = "skip"
+	DuplicateAgain = "again"
+)
+
 // Proxy modes.
 const (
 	ProxySystem = "system" // OS / environment setting
@@ -81,6 +87,10 @@ type Settings struct {
 	HostConnections map[string]int `json:"host_connections,omitempty"`
 	// UserAgent replaces the default User-Agent when not empty.
 	UserAgent string `json:"user_agent,omitempty"`
+	// DuplicateAuto decides what an automatic add (browser, clipboard,
+	// grabber, API) does with a URL already in the list: DuplicateSkip or
+	// DuplicateAgain. The Add dialog always asks instead.
+	DuplicateAuto string `json:"duplicate_auto,omitempty"`
 	// NoUpdateCheck is phrased negatively so settings files written before
 	// the option existed keep the default: check for updates at start-up.
 	NoUpdateCheck bool `json:"no_update_check,omitempty"`
@@ -158,6 +168,9 @@ func (s *Settings) normalize(fallbackDir string) {
 		s.HostConnections[key] = n
 	}
 	s.UserAgent = strings.TrimSpace(s.UserAgent)
+	if s.DuplicateAuto != DuplicateAgain {
+		s.DuplicateAuto = DuplicateSkip
+	}
 	seen := map[string]bool{}
 	queues := make([]string, 0, len(s.Queues)+1)
 	for _, q := range s.Queues {

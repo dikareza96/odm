@@ -157,7 +157,9 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	if req.Start != nil {
 		start = *req.Start
 	}
-	info := s.mgr.Create(engine.AddOptions{
+	// Requests here come from the browser relay or scripts, so the
+	// duplicate policy for automatic adds applies.
+	info, added := s.mgr.AddAuto(engine.AddOptions{
 		URL: req.URL, Dir: req.Dir, Connections: req.Connections, Headers: req.Headers,
 		SpeedLimit: req.SpeedLimit, Start: start, OpenWhenDone: req.OpenWhenDone,
 		Category:    strings.TrimSpace(req.Category),
@@ -166,7 +168,11 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		Description: strings.TrimSpace(req.Description),
 	})
 	s.Broadcast()
-	writeJSON(w, http.StatusCreated, info)
+	status := http.StatusCreated
+	if !added {
+		status = http.StatusOK // already in the list; info is the existing entry
+	}
+	writeJSON(w, status, info)
 }
 
 // handleProbe inspects a URL so the Add dialog can show size and file name.

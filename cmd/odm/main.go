@@ -153,9 +153,12 @@ func main() {
 		}
 	})
 
-	if settings.Clipboard {
-		go clipmon.Watch(ctx, func() []string { return mgr.Settings().FileTypes }, func(u string) {
-			mgr.Add(u, "", 0, nil, 0)
+	// The watcher always runs and reads the setting on each change, so the
+	// Options toggle applies immediately. Without a native clipboard API
+	// (Linux, macOS) the desktop UI polls through Fyne instead.
+	if clipmon.Native {
+		go clipmon.Watch(ctx, clipboardConfig(mgr), func(u string) {
+			mgr.AddAuto(engine.AddOptions{URL: u, Start: true})
 		})
 	}
 
@@ -227,6 +230,14 @@ func main() {
 	}
 	<-ctx.Done()
 	stopServers()
+}
+
+// clipboardConfig reads the clipboard monitor's settings on every call.
+func clipboardConfig(mgr *engine.Manager) func() clipmon.Config {
+	return func() clipmon.Config {
+		st := mgr.Settings()
+		return clipmon.Config{Enabled: st.Clipboard, FileTypes: st.FileTypes}
+	}
 }
 
 // runBrowserRegistration handles -register-browser / -unregister-browser and

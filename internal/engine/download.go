@@ -217,7 +217,7 @@ func (d *Download) Start(parent context.Context) {
 func (d *Download) prepare(ctx context.Context) error {
 	d.mu.Lock()
 	needProbe := len(d.Chunks) == 0
-	rawURL, headers, dir := d.URL, d.Headers, d.Dir
+	rawURL, headers := d.URL, d.Headers
 	d.mu.Unlock()
 
 	if needProbe {
@@ -246,13 +246,14 @@ func (d *Download) prepare(ctx context.Context) error {
 		}
 		d.mu.Unlock()
 	}
-	d.mu.Lock()
-	dir = d.Dir
-	d.mu.Unlock()
-	return d.openTarget(dir)
+	return d.openTarget(needProbe)
 }
 
-func (d *Download) openTarget(_ string) error {
+// openTarget opens the .odmpart file. A fresh download (first probe) claims
+// a name nobody uses yet, because finishing used to delete whatever file
+// already had the name, and two downloads with one name shared an .odmpart.
+// A resumed download keeps the name it claimed.
+func (d *Download) openTarget(fresh bool) error {
 	d.mu.Lock()
 	if d.FileName == "" {
 		d.FileName = "download.bin"
@@ -281,9 +282,22 @@ func (d *Download) openTarget(_ string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return err
+	var f *os.File
+	var err error
+	if fresh {
+		var name string
+		name, f, err = claimName(dir, filepath.Base(final))
+		if err != nil {
+			return err
+		}
+		d.mu.Lock()
+		d.FileName = name
+		d.mu.Unlock()
+	} else {
+		f, err = os.OpenFile(tmp, os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			return err
+		}
 	}
 	if rangeOK && total > 0 {
 		if err := f.Truncate(total); err != nil {
@@ -481,8 +495,75 @@ func (d *Download) finish() error {
 	}
 	final := filepath.Join(dir, name)
 	tmp := final + ".odmpart"
-	_ = os.Remove(final)
+	if _, err := os.Stat(final); err == nil {
+		// A file took this name while we downloaded. Keep it and finish
+		// under the next free name; this used to delete it.
+		alt, err := freeName(dir, name)
+		if err != nil {
+			return err
+		}
+		d.mu.Lock()
+		d.FileName = alt
+		d.mu.Unlock()
+		final = filepath.Join(dir, alt)
+	}
 	return os.Rename(tmp, final)
+}
+
+// maxNameTries bounds the "name (n).ext" search.
+const maxNameTries = 1000
+
+// claimName finds the first free name starting from name and creates its
+// .odmpart with O_EXCL, so a concurrent download cannot take the same one.
+func claimName(dir, name string) (string, *os.File, error) {
+	for i := 1; i <= maxNameTries; i++ {
+		cand := numberedName(name, i)
+		final := filepath.Join(dir, cand)
+		if _, err := os.Stat(final); err == nil {
+			continue
+		}
+		f, err := os.OpenFile(final+".odmpart", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		return cand, f, nil
+	}
+	return "", nil, fmt.Errorf("no free file name for %q in %s", name, dir)
+}
+
+// freeName is the first numbered variant of name with neither a file nor
+// an .odmpart in dir.
+func freeName(dir, name string) (string, error) {
+	for i := 2; i <= maxNameTries; i++ {
+		cand := numberedName(name, i)
+		final := filepath.Join(dir, cand)
+		_, e1 := os.Stat(final)
+		_, e2 := os.Stat(final + ".odmpart")
+		if os.IsNotExist(e1) && os.IsNotExist(e2) {
+			return cand, nil
+		}
+	}
+	return "", fmt.Errorf("no free file name for %q in %s", name, dir)
+}
+
+// numberedName returns name for n == 1, else "base (n).ext", keeping
+// compound archive extensions whole ("x (2).tar.gz", not "x.tar (2).gz").
+func numberedName(name string, n int) string {
+	if n <= 1 {
+		return name
+	}
+	ext := filepath.Ext(name)
+	lower := strings.ToLower(name)
+	for _, c := range []string{".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"} {
+		if strings.HasSuffix(lower, c) {
+			ext = name[len(name)-len(c):]
+			break
+		}
+	}
+	return fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), n, ext)
 }
 
 // Pause stops the running transfer, preserving progress.

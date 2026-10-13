@@ -61,9 +61,9 @@ func TestLoadSaveSettings(t *testing.T) {
 	}
 
 	want := Settings{Dir: "/downloads", Connections: 12, Concurrent: 5, SpeedLimit: 1048576, Categories: false, Proxy: ProxyConfig{Mode: "none"}, Queues: []string{DefaultQueue}, FileTypes: DefaultFileTypes(), CategoryDirs: map[string]string{},
-		HostConnections: map[string]int{},
-		Schedules:       map[string]QueueSchedule{DefaultQueue: {Days: []bool{true, true, true, true, true, true, true}, Parallel: 1, Retries: 10}},
-		Limits:          DownloadLimits{MB: 200, Hours: 5}}
+		HostConnections: map[string]int{}, DuplicateAuto: DuplicateSkip,
+		Schedules: map[string]QueueSchedule{DefaultQueue: {Days: []bool{true, true, true, true, true, true, true}, Parallel: 1, Retries: 10}},
+		Limits:    DownloadLimits{MB: 200, Hours: 5}}
 	if err := SaveSettings(path, want); err != nil {
 		t.Fatal(err)
 	}

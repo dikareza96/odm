@@ -23,6 +23,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"odm/internal/clipmon"
 	"odm/internal/engine"
 )
 
@@ -65,6 +66,14 @@ func Run(ctx context.Context, mgr *engine.Manager, opts Options) error {
 	if !mgr.Settings().NoUpdateCheck {
 		// A short delay keeps the request off the start-up path.
 		time.AfterFunc(3*time.Second, func() { a.checkForUpdates(false) })
+	}
+	if !clipmon.Native {
+		go clipmon.Poll(ctx, time.Second, a.readClipboard, func() clipmon.Config {
+			st := mgr.Settings()
+			return clipmon.Config{Enabled: st.Clipboard, FileTypes: st.FileTypes}
+		}, func(u string) {
+			mgr.AddAuto(engine.AddOptions{URL: u, Start: true})
+		})
 	}
 	if opts.Show != nil {
 		go func() {
@@ -114,6 +123,14 @@ func (a *application) setupTray() {
 				"Downloads continue in the background. Use the tray icon to open ODM or exit."))
 		}
 	})
+}
+
+// readClipboard returns the clipboard text. Fyne's clipboard must be used on
+// the UI thread, hence DoAndWait from the polling goroutine.
+func (a *application) readClipboard() string {
+	var text string
+	fyne.DoAndWait(func() { text = a.fyneApp.Clipboard().Content() })
+	return text
 }
 
 func (a *application) showWindow() {
@@ -1106,8 +1123,12 @@ func (a *application) showRowMenu(pos fyne.Position) {
 	if d.Status == engine.StatusComplete {
 		items = append(items, fyne.NewMenuItem("Open file", func() { openPath(d.FilePath) }))
 	}
+	refresh := fyne.NewMenuItem("Refresh download address…", func() { a.refreshAddress(*d) })
+	// Only for unfinished, stopped downloads: the engine refuses others.
+	refresh.Disabled = d.Status == engine.StatusComplete || d.Status == engine.StatusDownloading || d.Status == engine.StatusQueued
 	items = append(items,
 		fyne.NewMenuItem("Open folder", func() { revealPath(d.FilePath) }),
+		refresh,
 		fyne.NewMenuItem("Pause / Resume", func() {
 			// The clicked row decides the direction for the whole selection.
 			if d.Status == engine.StatusDownloading || d.Status == engine.StatusQueued {

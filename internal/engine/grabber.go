@@ -86,7 +86,7 @@ func (m *Manager) Grab(ctx context.Context, o GrabberOptions, progress func(page
 					break
 				}
 				res.Files = append(res.Files, ref.String())
-				m.Create(AddOptions{
+				m.AddAuto(AddOptions{
 					URL:         ref.String(),
 					Dir:         o.Dir,
 					Connections: o.Connections,

@@ -117,11 +117,16 @@ func (a *application) openAddDialog() {
 
 	dlg := dialog.NewCustomWithoutButtons("New Download", content, a.win)
 
-	create := func(start bool) {
+	var create func(start, confirmed bool)
+	create = func(start, confirmed bool) {
 		conns := settings.Connections
 		fmt.Sscanf(connEntry.Text, "%d", &conns)
 		url := strings.TrimSpace(urlEntry.Text)
 		if url == "" {
+			return
+		}
+		if existing, dup := a.mgr.FindByURL(url); dup && !confirmed {
+			a.askDuplicate(existing, func() { create(start, true) })
 			return
 		}
 		info := a.mgr.Create(engine.AddOptions{
@@ -141,9 +146,9 @@ func (a *application) openAddDialog() {
 		}
 	}
 
-	startBtn := widget.NewButtonWithIcon("Start Download", theme.ConfirmIcon(), func() { create(true) })
+	startBtn := widget.NewButtonWithIcon("Start Download", theme.ConfirmIcon(), func() { create(true, false) })
 	startBtn.Importance = widget.HighImportance
-	laterBtn := widget.NewButtonWithIcon("Download Later", theme.ContentAddIcon(), func() { create(false) })
+	laterBtn := widget.NewButtonWithIcon("Download Later", theme.ContentAddIcon(), func() { create(false, false) })
 	cancelBtn := widget.NewButton("Cancel", func() { dlg.Hide() })
 	dlg.SetButtons([]fyne.CanvasObject{laterBtn, cancelBtn, startBtn})
 	dlg.Resize(fyne.NewSize(620, 1)) // height clamps to content: no empty band above the buttons
@@ -272,6 +277,16 @@ func (a *application) openOptionsTab(tab int) {
 	progCheck.SetChecked(!settings.NoProgressDialog)
 	doneCheck := widget.NewCheck("Show the download complete dialog", nil)
 	doneCheck.SetChecked(!settings.NoCompleteDialog)
+	const (
+		dupSkip  = "Skip it"
+		dupAgain = "Download it again"
+	)
+	dupSelect := widget.NewSelect([]string{dupSkip, dupAgain}, nil)
+	if settings.DuplicateAuto == engine.DuplicateAgain {
+		dupSelect.SetSelected(dupAgain)
+	} else {
+		dupSelect.SetSelected(dupSkip)
+	}
 	uaEntry := widget.NewEntry()
 	uaEntry.SetText(settings.UserAgent)
 	uaEntry.SetPlaceHolder(engine.DefaultUserAgent)
@@ -280,6 +295,10 @@ func (a *application) openOptionsTab(tab int) {
 		progCheck,
 		doneCheck,
 		hint("These settings do not apply to queue processing."),
+		widget.NewSeparator(),
+		widget.NewLabel("If a link that is already in the list is added by the browser, clipboard or grabber:"),
+		small(dupSelect, 220),
+		hint("Adding a duplicate by hand always asks."),
 		widget.NewSeparator(),
 		widget.NewLabel("User-Agent for downloads:"),
 		uaEntry,
@@ -609,6 +628,10 @@ func (a *application) openOptionsTab(tab int) {
 		next.CategoryDirs = cleanDirs
 		next.HostConnections = hostMap
 		next.UserAgent = strings.TrimSpace(uaEntry.Text)
+		next.DuplicateAuto = engine.DuplicateSkip
+		if dupSelect.Selected == dupAgain {
+			next.DuplicateAuto = engine.DuplicateAgain
+		}
 		next.Proxy = proxy
 		next.Logins = logins
 		next.Limits = lim
@@ -651,6 +674,58 @@ func parseFileTypes(s string) []string {
 		}
 	}
 	return out
+}
+
+// askDuplicate tells the user the address is already in the list and lets
+// them show that entry, download it again (it gets a numbered file name),
+// or cancel.
+func (a *application) askDuplicate(existing engine.Info, again func()) {
+	msg := widget.NewLabel(fmt.Sprintf("This address is already in the list as %q (%s).\n"+
+		"Downloading it again saves it under a numbered name.", existing.FileName, statusText(existing)))
+	msg.Wrapping = fyne.TextWrapWord
+	var dlg *dialog.CustomDialog
+	show := widget.NewButton("Show existing", func() {
+		dlg.Hide()
+		a.openProgressWindow(existing.ID)
+	})
+	dl := widget.NewButton("Download again", func() { dlg.Hide(); again() })
+	dl.Importance = widget.HighImportance
+	dlg = dialog.NewCustomWithoutButtons("Duplicate download", msg, a.win)
+	dlg.SetButtons([]fyne.CanvasObject{widget.NewButton("Cancel", func() { dlg.Hide() }), show, dl})
+	dlg.Resize(fyne.NewSize(460, 1))
+	dlg.Show()
+}
+
+// refreshAddress asks for a new URL for an unfinished download whose link
+// expired. The engine checks it serves the same file before switching.
+func (a *application) refreshAddress(d engine.Info) {
+	entry := widget.NewEntry()
+	entry.SetText(d.URL)
+	entry.MultiLine = false
+	note := widget.NewLabel("Paste the new address of the same file. Progress is kept if the server supports resuming.")
+	note.Wrapping = fyne.TextWrapWord
+	note.Importance = widget.LowImportance
+	dlg := dialog.NewCustomConfirm("Refresh download address", "Change", "Cancel",
+		container.NewVBox(widget.NewLabel(d.FileName), entry, note), func(ok bool) {
+			if !ok || strings.TrimSpace(entry.Text) == "" || strings.TrimSpace(entry.Text) == d.URL {
+				return
+			}
+			newURL := strings.TrimSpace(entry.Text)
+			go func() { // probes the network; keep it off the UI thread
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				err := a.mgr.Readdress(ctx, d.ID, newURL)
+				fyne.Do(func() {
+					if err != nil {
+						dialog.ShowError(err, a.win)
+						return
+					}
+					a.refresh()
+				})
+			}()
+		}, a.win)
+	dlg.Resize(fyne.NewSize(560, 1)) // wide enough for a typical URL; height fits content
+	dlg.Show()
 }
 
 /* ---------- browser integration ---------- */

@@ -14,7 +14,9 @@ queues. It runs as a desktop app, or headless with a JSON API.
   per-server overrides.
 - An idle connection takes over half of the busiest remaining chunk, so all
   connections stay busy until the end.
-- Resume after a pause, crash or restart from the exact byte offset.
+- Resume after a pause, crash or restart from the exact byte offset. If a
+  link expires, give the download a new address and it continues where it
+  stopped, as long as the new address serves the same file.
 - Servers that do not support ranges are fetched on a single stream.
 - Global and per-download speed limits, plus an optional data cap per time
   window.
@@ -30,6 +32,9 @@ queues. It runs as a desktop app, or headless with a JSON API.
   shut down when the queue finishes.
 - Site logins (HTTP Basic), import and export of the download list, and a site
   grabber that crawls a page and queues the files it links to.
+- A new download never replaces an existing file: if the name is taken, it is
+  saved as `name (2).ext`. Adding a link that is already in the list asks
+  first, or follows a setting for the browser, clipboard and grabber.
 
 **Desktop**
 - A main window with a toolbar, category and queue tree, sortable list and
@@ -44,7 +49,8 @@ queues. It runs as a desktop app, or headless with a JSON API.
 **Integration**
 - A browser extension (Chrome, Edge, Firefox) hands downloads to ODM through
   native messaging. ODM can register itself with each browser.
-- On Windows, a clipboard monitor queues downloadable URLs you copy.
+- A clipboard monitor queues downloadable URLs you copy. You can turn it on
+  or off at any time.
 
 ## Install
 
@@ -55,7 +61,9 @@ Once a version is tagged, prebuilt archives are attached to
 | -------- | ------- |
 | Windows x64 | `odm-windows-amd64.zip` |
 | Linux x64 | `odm-linux-amd64.tar.gz` |
+| Linux ARM64 | `odm-linux-arm64.tar.gz` |
 | macOS (Apple silicon) | `odm-darwin-arm64.tar.gz` |
+| macOS (Intel) | `odm-darwin-amd64.tar.gz` |
 
 Unpack the archive and run `ODM.exe` (Windows) or `./odm` (Linux, macOS).
 Settings and download state are stored in `<config>/odm/`. `<config>` is
@@ -192,7 +200,7 @@ internal/browserreg native-host registration for Chrome, Edge, Chromium, Firefox
 internal/sysproxy   OS proxy lookup (environment, Windows Internet Options)
 internal/autostart  launch at login (Run key, XDG autostart, LaunchAgent)
 internal/update     GitHub Releases version check
-internal/clipmon    Windows clipboard watcher and URL detection
+internal/clipmon    clipboard watcher (native on Windows, via Fyne elsewhere) and URL detection
 internal/osutil     open, reveal and shutdown helpers
 extension/          MV3 browser extension and native-host manifests
 ```

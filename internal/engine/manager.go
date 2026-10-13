@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -685,6 +686,89 @@ func (m *Manager) SetOpenWhenDone(id string, v bool) bool {
 	d.SetOpenWhenDone(v)
 	m.changed(d)
 	return true
+}
+
+// FindByURL returns a download whose address is rawURL, ignoring
+// surrounding spaces and a trailing fragment.
+func (m *Manager) FindByURL(rawURL string) (Info, bool) {
+	want := sameURLKey(rawURL)
+	for _, d := range m.List() {
+		if sameURLKey(d.URL) == want {
+			return d, true
+		}
+	}
+	return Info{}, false
+}
+
+func sameURLKey(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.IndexByte(raw, '#'); i >= 0 {
+		raw = raw[:i]
+	}
+	return raw
+}
+
+// AddAuto adds a download requested without a person confirming it (browser
+// hand-off, clipboard, grabber, API). With the DuplicateSkip policy a URL
+// already in the list is not added again; the existing entry is returned
+// with added=false.
+func (m *Manager) AddAuto(o AddOptions) (info Info, added bool) {
+	if m.Settings().DuplicateAuto != DuplicateAgain {
+		if existing, ok := m.FindByURL(o.URL); ok {
+			return existing, false
+		}
+	}
+	return m.Create(o), true
+}
+
+// Readdress points an unfinished download at a new address, for links that
+// expire. The new address must serve the same file: the size must match,
+// and once bytes are on disk the server must allow ranges so the transfer
+// continues where it stopped instead of mixing two files.
+func (m *Manager) Readdress(ctx context.Context, id, newURL string) error {
+	d := m.get(id)
+	if d == nil {
+		return fmt.Errorf("download not found")
+	}
+	newURL = strings.TrimSpace(newURL)
+	if u, err := url.Parse(newURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("%q is not an http(s) address", newURL)
+	}
+	switch d.status() {
+	case StatusDownloading, StatusQueued:
+		return fmt.Errorf("pause the download before changing its address")
+	case StatusComplete:
+		return fmt.Errorf("the download is already complete")
+	}
+	d.mu.Lock()
+	headers, total, done, probed := d.Headers, d.Total, d.doneLocked(), len(d.Chunks) > 0
+	d.mu.Unlock()
+
+	if !probed { // never started: the next start probes the new address
+		d.mu.Lock()
+		d.URL, d.FinalURL = newURL, ""
+		d.mu.Unlock()
+		m.changed(d)
+		return nil
+	}
+	p, err := Inspect(ctx, m.HTTPClient(), newURL, headers)
+	if err != nil {
+		return fmt.Errorf("checking the new address: %w", err)
+	}
+	if total > 0 && p.Total > 0 && p.Total != total {
+		return fmt.Errorf("the new address serves %d bytes but this download is %d bytes; it is a different file", p.Total, total)
+	}
+	if done > 0 && !p.RangeOK {
+		return fmt.Errorf("the new address does not support resuming, so the %d bytes already downloaded cannot be kept", done)
+	}
+	d.mu.Lock()
+	d.URL, d.FinalURL, d.cookies = newURL, p.FinalURL, p.Cookies
+	if d.Status == StatusError {
+		d.Status, d.Err = StatusPaused, ""
+	}
+	d.mu.Unlock()
+	m.changed(d)
+	return nil
 }
 
 // Add queues a new download and returns its projection.

@@ -1,6 +1,5 @@
 //go:build windows
 
-// Package clipmon watches the Windows clipboard for downloadable URLs.
 package clipmon
 
 import (
@@ -21,9 +20,14 @@ var (
 	procClipboardSeqNumber = user32.NewProc("GetClipboardSequenceNumber")
 	procGlobalLock         = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock       = kernel32.NewProc("GlobalUnlock")
+	procGlobalSize         = kernel32.NewProc("GlobalSize")
 )
 
 const cfUnicodeText = 13
+
+// Native reports whether this platform has a built-in watcher (Watch); where
+// it does not, the desktop UI polls through Fyne instead.
+const Native = true
 
 func readClipboard() string {
 	if ok, _, _ := procIsFormatAvailable.Call(cfUnicodeText); ok == 0 {
@@ -38,37 +42,41 @@ func readClipboard() string {
 	if h == 0 {
 		return ""
 	}
+	size, _, _ := procGlobalSize.Call(h)
 	p, _, _ := procGlobalLock.Call(h)
-	if p == 0 {
+	if p == 0 || size < 2 {
 		return ""
 	}
 	defer procGlobalUnlock.Call(h)
 
-	// CF_UNICODETEXT is NUL-terminated; bound the scan generously.
-	return syscall.UTF16ToString(unsafe.Slice((*uint16)(unsafe.Pointer(p)), 1<<20))
+	// The block lives in the Windows heap, not Go's. unsafe.Add from nil
+	// turns the address into a pointer without a uintptr->Pointer
+	// conversion (which vet cannot tell apart from a dangling Go pointer),
+	// and the slice is bounded by GlobalSize instead of an arbitrary cap,
+	// so a block without a terminating NUL is never read past its end.
+	text := unsafe.Slice((*uint16)(unsafe.Add(nil, p)), size/2)
+	return syscall.UTF16ToString(text) // stops at the first NUL
 }
 
-// Watch polls the clipboard and calls onURL once per newly copied downloadable
-// URL. It returns when ctx is cancelled.
-// fileTypes is read on every clipboard change so edits in Options apply
-// without restarting the watcher.
-func Watch(ctx context.Context, fileTypes func() []string, onURL func(string)) {
-	var last uint32
-	seen := map[string]bool{}
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+// Watch checks the clipboard's change counter every 500 ms and reads the
+// text only when it changed, queueing new downloadable URLs until ctx ends.
+func Watch(ctx context.Context, cfg func() Config, onURL func(string)) {
+	var t Tracker
+	t.Next(readClipboard(), Config{}) // baseline: ignore what is there already
+	last, _, _ := procClipboardSeqNumber.Call()
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tick.C:
 			seq, _, _ := procClipboardSeqNumber.Call()
-			if uint32(seq) == last {
+			if seq == last {
 				continue
 			}
-			last = uint32(seq)
-			if u, ok := ClipboardURL(readClipboard(), fileTypes()...); ok && !seen[u] {
-				seen[u] = true
+			last = seq
+			if u, ok := t.Next(readClipboard(), cfg()); ok {
 				onURL(u)
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -63,7 +64,11 @@ func runNativeHost(configDir string) {
 				FileName string `json:"file_name"`
 			}
 			_ = json.NewDecoder(resp.Body).Decode(&info)
-			return native.Reply{OK: true, ID: info.ID, Message: "queued"}
+			msg := "queued"
+			if resp.StatusCode == http.StatusOK { // 200, not 201: it was already in the list
+				msg = "already in the list"
+			}
+			return native.Reply{OK: true, ID: info.ID, Message: msg}
 		}
 		return native.Reply{Error: "unknown message type: " + m.Type}
 	})

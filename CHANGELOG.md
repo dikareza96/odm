@@ -6,6 +6,31 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Refresh download address: point an unfinished download at a new URL when
+  its link expires. ODM checks that the new address serves the same file
+  (same size, resumable once bytes are on disk) before switching.
+- Duplicate links: the Add dialog asks whether to show the existing entry or
+  download again; browser, clipboard, grabber and API adds follow a setting
+  (skip, default, or download again).
+- Clipboard monitor on Linux and macOS (desktop build).
+- Release archives for Linux ARM64 and macOS Intel.
+
+### Changed
+
+- The clipboard monitor's on/off switch applies immediately instead of after
+  a restart. A link already on the clipboard when ODM starts, or when the
+  monitor is switched on, is not grabbed.
+
+### Fixed
+
+- A new download no longer replaces an existing file with the same name;
+  finishing used to delete it. Downloads now claim a free name
+  (`name (2).ext`), and two downloads of the same name no longer share one
+  partial file.
+- The Windows clipboard reader is bounded by the clipboard block's real size.
+
 ## [0.1.0] - 2026-10-13
 
 ### Added
