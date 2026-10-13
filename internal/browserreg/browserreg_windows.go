@@ -2,6 +2,8 @@ package browserreg
 
 import (
 	"errors"
+	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -32,6 +34,28 @@ func register(chromium, firefox string) []Result {
 		out = append(out, Result{Browser: w.browser, Location: `HKCU\` + w.key, Err: err})
 	}
 	return out
+}
+
+func check() []Status {
+	var out []Status
+	for _, w := range windowsKeys {
+		st := Status{Browser: w.browser, Installed: true}
+		if k, err := registry.OpenKey(registry.CURRENT_USER, w.key, registry.QUERY_VALUE); err == nil {
+			if manifestPath, _, err := k.GetStringValue(""); err == nil {
+				if exe, err := manifestExe(manifestPath); err == nil {
+					st.Registered, st.Exe = true, exe
+				}
+			}
+			k.Close()
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// samePath compares Windows paths case-insensitively.
+func samePath(a, b string) bool {
+	return a != "" && strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 func unregister() []Result {

@@ -60,6 +60,25 @@ func register(chromium, firefox string) []Result {
 	return out
 }
 
+func check() []Status {
+	var out []Status
+	for _, h := range hostDirs() {
+		st := Status{Browser: h.browser}
+		if _, err := os.Stat(h.profile); err == nil {
+			st.Installed = true
+		}
+		if exe, err := manifestExe(filepath.Join(h.dir, HostName+".json")); err == nil {
+			st.Registered, st.Exe = true, exe
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+func samePath(a, b string) bool {
+	return a != "" && filepath.Clean(a) == filepath.Clean(b)
+}
+
 func unregister() []Result {
 	var out []Result
 	for _, h := range hostDirs() {

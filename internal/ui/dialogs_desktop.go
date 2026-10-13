@@ -232,9 +232,39 @@ func (a *application) openOptionsTab(tab int) {
 	clipCheck.SetChecked(settings.Clipboard)
 	updCheck := widget.NewCheck("Check for updates at start-up", nil)
 	updCheck.SetChecked(!settings.NoUpdateCheck)
-	// The result shows on this Options window; on the main window it was
-	// hidden behind Options.
-	regBtn := widget.NewButtonWithIcon("Register", theme.LoginIcon(), func() { a.registerBrowser(w) })
+	// Shows which browsers launch this ODM, which launch another copy, and
+	// which have no registration; refreshed after Register/Unregister. The
+	// result dialogs show on this Options window (on the main window they
+	// were hidden behind it).
+	browserStatus := widget.NewLabel("")
+	browserStatus.Wrapping = fyne.TextWrapWord
+	refreshBrowser := func() {
+		exe, _ := selfExe()
+		browserStatus.SetText(browserreg.Summary(browserreg.Check(), exe))
+	}
+	refreshBrowser()
+	regBtn := widget.NewButtonWithIcon("Register", theme.LoginIcon(), func() {
+		a.registerBrowser(w)
+		refreshBrowser()
+	})
+	unregBtn := widget.NewButtonWithIcon("Unregister", theme.DeleteIcon(), func() {
+		dialog.ShowConfirm("Unregister browser integration",
+			"Browsers will stop handing downloads to ODM until you register again. Continue?", func(yes bool) {
+				if !yes {
+					return
+				}
+				var failed []string
+				for _, r := range browserreg.Unregister() {
+					if r.Err != nil {
+						failed = append(failed, r.String())
+					}
+				}
+				refreshBrowser()
+				if len(failed) > 0 {
+					dialog.ShowError(fmt.Errorf("could not unregister:\n%s", strings.Join(failed, "\n")), w)
+				}
+			}, w)
+	})
 	startupCheck := widget.NewCheck("Launch ODM on startup (in the system tray)", nil)
 	startupWas := autostart.Enabled()
 	startupCheck.SetChecked(startupWas)
@@ -242,8 +272,10 @@ func (a *application) openOptionsTab(tab int) {
 	trayCheck.SetChecked(!settings.NoCloseToTray)
 	generalTab := container.NewVBox(
 		header("Browser / system integration"),
-		container.NewBorder(nil, nil, nil, regBtn,
-			widget.NewLabel("Browser extension host (Chrome, Edge, Chromium, Firefox)")),
+		widget.NewLabelWithStyle("Browser extension (Chrome, Edge, Chromium, Firefox)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		browserStatus,
+		container.NewHBox(regBtn, unregBtn),
+		widget.NewSeparator(),
 		startupCheck,
 		trayCheck,
 		clipCheck,
@@ -778,11 +810,17 @@ func (a *application) refreshAddress(d engine.Info) {
 
 // registerBrowser points Chrome, Edge, Chromium and Firefox at this ODM
 // executable as the extension's native host, then reports per browser.
-func (a *application) registerBrowser(parent fyne.Window) {
+// selfExe is this ODM's executable path as registrations record it.
+func selfExe() (string, error) {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
 	}
+	return exe, err
+}
+
+func (a *application) registerBrowser(parent fyne.Window) {
+	exe, err := selfExe()
 	if err != nil {
 		dialog.ShowError(fmt.Errorf("cannot locate the ODM executable: %w", err), parent)
 		return

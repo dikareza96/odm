@@ -108,12 +108,58 @@ func TestRegisterUnixFolders(t *testing.T) {
 		t.Fatalf("firefox manifest content: %s", ff)
 	}
 
+	status := map[string]Status{}
+	for _, s := range Check() {
+		status[s.Browser] = s
+	}
+	if !status["Chrome"].Points("/opt/odm/odm") || !status["Firefox"].Points("/opt/odm/odm") {
+		t.Fatalf("Check after Register: %+v", status)
+	}
+	if status["Chrome"].Points("/other/odm") {
+		t.Fatal("Points matched a different executable")
+	}
+	if status["Edge"].Registered || status["Edge"].Installed {
+		t.Fatalf("Edge without a profile: %+v", status["Edge"])
+	}
+
 	for _, r := range Unregister() {
 		if r.Err != nil {
 			t.Fatalf("unregister %s: %v", r.Browser, r.Err)
 		}
 	}
+	for _, s := range Check() {
+		if s.Registered {
+			t.Fatalf("%s still registered after Unregister", s.Browser)
+		}
+	}
 	if _, err := os.Stat(got["Chrome"].Location); !os.IsNotExist(err) {
 		t.Fatal("chrome manifest not removed")
+	}
+}
+
+func TestSummary(t *testing.T) {
+	me := "/opt/odm/odm"
+	all := func(exe string) []Status {
+		var s []Status
+		for _, b := range []string{"Chrome", "Edge", "Firefox"} {
+			s = append(s, Status{Browser: b, Installed: true, Registered: exe != "", Exe: exe})
+		}
+		return s
+	}
+	if got := Summary(all(me), me); got != "Registered for Chrome, Edge, Firefox." {
+		t.Fatalf("all here: %q", got)
+	}
+	if got := Summary(all(""), me); got != "Not registered: Chrome, Edge, Firefox." {
+		t.Fatalf("none: %q", got)
+	}
+	mixed := []Status{
+		{Browser: "Chrome", Installed: true, Registered: true, Exe: me},
+		{Browser: "Edge", Installed: true, Registered: true, Exe: "/old/odm"},
+		{Browser: "Firefox", Installed: true},
+		{Browser: "Chromium"}, // not installed: not mentioned
+	}
+	want := "Registered for Chrome. Edge uses another ODM: /old/odm. Not registered for: Firefox."
+	if got := Summary(mixed, me); got != want {
+		t.Fatalf("mixed:\n got  %q\n want %q", got, want)
 	}
 }

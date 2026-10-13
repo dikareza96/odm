@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // HostName is the native host name the extension connects to.
@@ -93,6 +94,84 @@ func Register(exe, configDir string) []Result {
 	}
 	return register(chromium, firefox)
 }
+
+// Status is one browser's current registration.
+type Status struct {
+	Browser    string
+	Installed  bool   // known only on macOS/Linux (profile folder); true on Windows
+	Registered bool   // a host manifest for ODM is registered
+	Exe        string // the executable that registration launches
+}
+
+// Points reports whether the registration launches exe.
+func (s Status) Points(exe string) bool {
+	return s.Registered && samePath(s.Exe, exe)
+}
+
+// manifestExe reads the executable path from a host manifest file.
+func manifestExe(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var m manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return "", err
+	}
+	return m.Path, nil
+}
+
+// Summary describes statuses from the point of view of exe: which browsers
+// launch this ODM, which launch another copy (e.g. a release build after a
+// test build re-registered), and which have no registration. Browsers that
+// are not installed (known on macOS/Linux) are left out.
+func Summary(statuses []Status, exe string) string {
+	var here, missing []string
+	elsewhere := map[string][]string{}
+	var otherExes []string
+	for _, s := range statuses {
+		switch {
+		case s.Points(exe):
+			here = append(here, s.Browser)
+		case s.Registered:
+			if _, seen := elsewhere[s.Exe]; !seen {
+				otherExes = append(otherExes, s.Exe)
+			}
+			elsewhere[s.Exe] = append(elsewhere[s.Exe], s.Browser)
+		case s.Installed:
+			missing = append(missing, s.Browser)
+		}
+	}
+	var parts []string
+	if len(here) > 0 {
+		parts = append(parts, "Registered for "+strings.Join(here, ", ")+".")
+	}
+	for _, other := range otherExes {
+		parts = append(parts, fmt.Sprintf("%s use%s another ODM: %s.",
+			strings.Join(elsewhere[other], ", "), plural(len(elsewhere[other])), other))
+	}
+	if len(missing) > 0 {
+		label := "Not registered"
+		if len(here) > 0 || len(otherExes) > 0 {
+			label = "Not registered for"
+		}
+		parts = append(parts, label+": "+strings.Join(missing, ", ")+".")
+	}
+	if len(parts) == 0 {
+		return "No supported browser found."
+	}
+	return strings.Join(parts, " ")
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return "s"
+	}
+	return ""
+}
+
+// Check reports each supported browser's registration.
+func Check() []Status { return check() }
 
 // Unregister removes what Register added (the manifests under configDir are
 // left; they are inert without the registrations).
