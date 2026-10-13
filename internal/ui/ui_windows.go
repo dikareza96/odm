@@ -27,7 +27,7 @@ func Run(mgr *engine.Manager) error {
 		selectedRow:     -1,
 	}
 	a.fyneApp = app.NewWithID("com.ochi.odm")
-	a.fyneApp.Settings().SetTheme(theme.DarkTheme())
+	a.fyneApp.Settings().SetTheme(newTheme())
 	a.win = a.fyneApp.NewWindow("Ochi Download Manager")
 	a.win.Resize(fyne.NewSize(1040, 640))
 	a.win.SetIcon(theme.DownloadIcon())
@@ -95,27 +95,30 @@ const (
 )
 
 func (a *application) build() {
-	top := container.NewHBox(
-		iconButton("Add URL", theme.ContentAddIcon(), a.openAddDialog),
+	top := container.NewVBox(
+		container.NewPadded(container.NewHBox(
+			iconButton("Add URL", theme.ContentAddIcon(), a.openAddDialog),
+			widget.NewSeparator(),
+			iconButton("Resume", theme.MediaPlayIcon(), a.resumeSelected),
+			iconButton("Stop", theme.MediaPauseIcon(), a.stopSelected),
+			iconButton("Stop All", theme.MediaStopIcon(), func() { a.mgr.PauseAll(); a.refresh() }),
+			widget.NewSeparator(),
+			iconButton("Delete", theme.ContentRemoveIcon(), a.deleteSelected),
+			iconButton("Del Completed", theme.ConfirmIcon(), func() { a.mgr.ClearCompleted(); a.refresh() }),
+			iconButton("Options", theme.SettingsIcon(), a.openOptionsDialog),
+			widget.NewSeparator(),
+			iconButton("Progress", theme.InfoIcon(), func() {
+				if d, ok := a.current(); ok {
+					a.openProgressWindow(d.ID)
+				}
+			}),
+			iconButton("Open folder", theme.FolderOpenIcon(), func() {
+				if d, ok := a.current(); ok {
+					revealPath(d.FilePath)
+				}
+			}),
+		)),
 		widget.NewSeparator(),
-		iconButton("Resume", theme.MediaPlayIcon(), a.resumeSelected),
-		iconButton("Stop", theme.MediaPauseIcon(), a.stopSelected),
-		iconButton("Stop All", theme.MediaStopIcon(), func() { a.mgr.PauseAll(); a.refresh() }),
-		widget.NewSeparator(),
-		iconButton("Delete", theme.ContentRemoveIcon(), a.deleteSelected),
-		iconButton("Del Completed", theme.ConfirmIcon(), func() { a.mgr.ClearCompleted(); a.refresh() }),
-		iconButton("Options", theme.SettingsIcon(), a.openOptionsDialog),
-		widget.NewSeparator(),
-		iconButton("Progress", theme.InfoIcon(), func() {
-			if d, ok := a.current(); ok {
-				a.openProgressWindow(d.ID)
-			}
-		}),
-		iconButton("Open folder", theme.FolderOpenIcon(), func() {
-			if d, ok := a.current(); ok {
-				revealPath(d.FilePath)
-			}
-		}),
 	)
 
 	base := widget.NewTableWithHeaders(
@@ -135,7 +138,11 @@ func (a *application) build() {
 			a.selectedRow = id.Row
 		}
 	}
-	base.CreateHeader = func() fyne.CanvasObject { return widget.NewLabel("") }
+	base.CreateHeader = func() fyne.CanvasObject {
+		l := widget.NewLabel("")
+		l.TextStyle = fyne.TextStyle{Bold: true}
+		return l
+	}
 	base.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		if id.Col >= 0 && id.Col < len(columnTitles) {
 			o.(*widget.Label).SetText(columnTitles[id.Col])
@@ -171,13 +178,15 @@ func (a *application) build() {
 		a.refresh()
 	}
 
-	a.status = widget.NewLabel("")
+	a.status = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{})
 
-	sidebar := container.NewBorder(widget.NewLabel("  Categories"), nil, nil, nil, a.cats)
+	catHeader := widget.NewLabelWithStyle("Categories", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	sidebar := container.NewBorder(container.NewPadded(catHeader), nil, nil, nil, a.cats)
 	split := container.NewHSplit(sidebar, a.table)
 	split.Offset = 0.22
 
-	a.win.SetContent(container.NewBorder(top, a.status, nil, nil, split))
+	footer := container.NewPadded(a.status)
+	a.win.SetContent(container.NewBorder(top, footer, nil, nil, split))
 }
 
 func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
@@ -396,7 +405,7 @@ func (a *application) removeSelected(withFile bool) {
 
 func iconButton(label string, icon fyne.Resource, fn func()) *widget.Button {
 	b := widget.NewButtonWithIcon(label, icon, fn)
-	b.Importance = widget.LowImportance
+	b.Importance = widget.MediumImportance
 	return b
 }
 
