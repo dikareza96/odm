@@ -20,17 +20,22 @@ chunk splitting, per-chunk resume state and a ~23 KiB minimum chunk.
 - **Browser takeover** — an MV3 extension plus a native-messaging host queues
   downloads from Chrome / Edge / Firefox, carrying referrer and cookies.
 - **Clipboard monitor** — on Windows, copying a downloadable URL queues it.
-- **Native Windows UI** — a real Win32 window (toolbar, category tree, report
-  table, dialogs) with no browser and no web server. On other platforms and in
-  headless mode the same engine is driven by a JSON + SSE API.
+- **Desktop UI** — a themed window built with Fyne: icon toolbar, category
+  sidebar, report table with progress bars, and dialogs (Download File Info,
+  Options, per-download progress with tabs and a connection table). No browser
+  and no web server; on headless/non-UI runs the same engine is driven by a
+  JSON + SSE API.
 
 ## Build
 
-Requires Go 1.23+. No cgo, no third-party modules.
+Requires Go 1.23+. The core engine uses only the standard library. The desktop
+UI uses [Fyne](https://fyne.io), which needs cgo, so a Windows cross-build needs
+mingw-w64 (`CC_WINDOWS`, default `x86_64-w64-mingw32-gcc`):
 
 ```bash
-./scripts/build.sh windows     # -> dist/ODM.exe (cross-compiles from any OS)
-go build -o odm ./cmd/odm      # local build
+sudo apt install gcc-mingw-w64-x86-64      # mingw toolchain for cross-building
+./scripts/build.sh windows                 # -> dist/ODM.exe
+go build -o odm ./cmd/odm                  # local build (no UI on non-Windows)
 ```
 
 ## Run
@@ -70,8 +75,8 @@ See [extension/README.md](extension/README.md) for registering it with a browser
 ```
 cmd/odm            CLI entry point; native UI, native-messaging relay, headless add
 internal/engine    probe, chunk planner, segmented transfer, manager, settings, JSON store
-internal/ui        native Win32 interface (github.com/lxn/walk), Windows-only
-internal/server    JSON + SSE API and the embedded web UI (non-Windows / headless)
+internal/ui        desktop UI (Fyne) — toolbar, category list, report table, dialogs
+internal/server    JSON + SSE API and the embedded web UI (headless)
 internal/native    Chrome/Firefox native-messaging framing
 internal/clipmon   Windows clipboard watcher + URL detection
 internal/osutil    open / reveal helpers

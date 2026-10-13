@@ -1,170 +1,239 @@
 //go:build windows
 
-// Package ui implements the native Win32 interface (github.com/lxn/walk),
-// mirroring the classic download-manager layout: toolbar, category tree, report
-// table and dialogs. It drives the engine in-process, with no web server.
+// Package ui implements the ODM desktop interface with Fyne: a themed window
+// with an icon toolbar, a category sidebar and a report table, driving the
+// engine in-process (no web server, no embedded browser).
 package ui
 
 import (
 	"fmt"
-	"runtime"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/lxn/walk"
-	. "github.com/lxn/walk/declarative"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 
 	"odm/internal/engine"
 )
 
-// Run starts the native UI and blocks until the window closes.
+// Run starts the desktop UI and blocks until the window closes.
 func Run(mgr *engine.Manager) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	app := &application{mgr: mgr}
-	app.model = &downloadModel{app: app}
-	return app.run()
-}
-
-type application struct {
-	mgr *engine.Manager
-
-	mw   *walk.MainWindow
-	tv   *walk.TableView
-	tree *walk.TreeView
-	stat *walk.Label
-
-	model   *downloadModel
-	treeMod *catModel
-
-	filter struct {
-		kind  string
-		value string
+	a := &application{
+		mgr:             mgr,
+		progressWindows: map[string]*progressView{},
+		selectedRow:     -1,
 	}
-	rowSig string
+	a.fyneApp = app.NewWithID("com.ochi.odm")
+	a.fyneApp.Settings().SetTheme(theme.DarkTheme())
+	a.win = a.fyneApp.NewWindow("Ochi Download Manager")
+	a.win.Resize(fyne.NewSize(1040, 640))
+	a.win.SetIcon(theme.DownloadIcon())
 
-	mu    sync.Mutex
-	items []engine.Info
-}
-
-func (a *application) run() error {
-	a.treeMod = buildCategoryTree(nil)
-
-	mw := MainWindow{
-		AssignTo: &a.mw,
-		Title:    "Ochi Download Manager",
-		Size:     Size{Width: 1000, Height: 620},
-		Layout:   VBox{MarginsZero: true, SpacingZero: true},
-		ToolBar: ToolBar{
-			ButtonStyle: ToolBarButtonTextOnly,
-			Items:       a.toolbarItems(),
-		},
-		Children: []Widget{
-			HSplitter{
-				Children: []Widget{
-					TreeView{
-						AssignTo:             &a.tree,
-						Model:                a.treeMod,
-						MinSize:              Size{Width: 200},
-						OnCurrentItemChanged: a.onCategoryChanged,
-					},
-					TableView{
-						AssignTo:         &a.tv,
-						AlternatingRowBG: true,
-						Columns: []TableViewColumn{
-							{Title: "File Name", Width: 250},
-							{Title: "Size", Width: 90, Alignment: AlignFar},
-							{Title: "Progress", Width: 80, Alignment: AlignFar},
-							{Title: "Status", Width: 95},
-							{Title: "Time left", Width: 95, Alignment: AlignFar},
-							{Title: "Transfer rate", Width: 110, Alignment: AlignFar},
-							{Title: "Path", Width: 260},
-						},
-						Model:                 a.model,
-						OnCurrentIndexChanged: a.onRowChanged,
-						OnItemActivated:       a.openProgressDialog,
-					},
-				},
-			},
-			Label{AssignTo: &a.stat, Text: ""},
-		},
-	}
-	if err := mw.Create(); err != nil {
-		return err
-	}
-
-	if menu := a.contextMenu(); menu != nil {
-		a.tv.SetContextMenu(menu)
-	}
-
-	go a.refreshLoop()
+	a.build()
 	a.refresh()
-	a.mw.Run()
+	go a.loop()
+	a.win.ShowAndRun()
 	return nil
 }
 
-func (a *application) toolbarItems() []MenuItem {
-	act := func(text string, fn func()) MenuItem {
-		return Action{Text: text, OnTriggered: fn}
+type catEntry struct {
+	text  string
+	kind  string
+	value string
+}
+
+type application struct {
+	mgr     *engine.Manager
+	fyneApp fyne.App
+	win     fyne.Window
+
+	table  *downloadTable
+	cats   *widget.List
+	status *widget.Label
+
+	mu          sync.Mutex
+	items       []engine.Info
+	catEntries  []catEntry
+	selectedRow int
+	filter      struct {
+		kind  string
+		value string
 	}
-	return []MenuItem{
-		act("Add URL", a.openAddDialog),
-		act("Resume", a.resumeSelected),
-		act("Stop", a.stopSelected),
-		act("Stop All", func() { a.mgr.PauseAll(); a.refresh() }),
-		act("Delete", a.deleteSelected),
-		act("Del Completed", func() { a.mgr.ClearCompleted(); a.refresh() }),
-		act("Options", a.openOptionsDialog),
-		Separator{},
-		act("Pause All", func() { a.mgr.PauseAll(); a.refresh() }),
-		act("Resume All", func() { a.mgr.ResumeAll(); a.refresh() }),
+
+	progressWindows map[string]*progressView
+}
+
+// downloadTable adds a double-click and a right-click menu to the report table.
+type downloadTable struct {
+	*widget.Table
+	app *application
+}
+
+func (t *downloadTable) DoubleTapped(*fyne.PointEvent) {
+	if d, ok := t.app.current(); ok {
+		t.app.openProgressWindow(d.ID)
 	}
 }
 
-func (a *application) contextMenu() *walk.Menu {
-	menu, err := walk.NewMenu()
-	if err != nil {
-		return nil
-	}
-	add := func(text string, fn func()) {
-		act := walk.NewAction()
-		_ = act.SetText(text)
-		act.Triggered().Attach(fn)
-		_ = menu.Actions().Add(act)
-	}
-	add("Show progress", a.openProgressDialog)
-	add("Open file", func() {
-		if info, ok := a.currentDownload(); ok && info.Status == engine.StatusComplete {
-			openPath(info.FilePath)
-		}
-	})
-	add("Open folder", func() {
-		if info, ok := a.currentDownload(); ok {
-			revealPath(info.FilePath)
-		}
-	})
-	add("Pause / Resume", a.toggleSelected)
-	add("Remove from list", func() { a.removeSelected(false) })
-	add("Remove + delete file", func() { a.removeSelected(true) })
-	return menu
+func (t *downloadTable) TappedSecondary(e *fyne.PointEvent) {
+	t.app.showRowMenu(e.AbsolutePosition)
 }
 
-func (a *application) refreshLoop() {
+var columnTitles = []string{"File Name", "Size", "Progress", "Status", "Time left", "Transfer rate", "Path"}
+
+const (
+	colName = iota
+	colSize
+	colProgress
+	colStatus
+	colETA
+	colRate
+	colPath
+)
+
+func (a *application) build() {
+	top := container.NewHBox(
+		iconButton("Add URL", theme.ContentAddIcon(), a.openAddDialog),
+		widget.NewSeparator(),
+		iconButton("Resume", theme.MediaPlayIcon(), a.resumeSelected),
+		iconButton("Stop", theme.MediaPauseIcon(), a.stopSelected),
+		iconButton("Stop All", theme.MediaStopIcon(), func() { a.mgr.PauseAll(); a.refresh() }),
+		widget.NewSeparator(),
+		iconButton("Delete", theme.ContentRemoveIcon(), a.deleteSelected),
+		iconButton("Del Completed", theme.ConfirmIcon(), func() { a.mgr.ClearCompleted(); a.refresh() }),
+		iconButton("Options", theme.SettingsIcon(), a.openOptionsDialog),
+		widget.NewSeparator(),
+		iconButton("Progress", theme.InfoIcon(), func() {
+			if d, ok := a.current(); ok {
+				a.openProgressWindow(d.ID)
+			}
+		}),
+		iconButton("Open folder", theme.FolderOpenIcon(), func() {
+			if d, ok := a.current(); ok {
+				revealPath(d.FilePath)
+			}
+		}),
+	)
+
+	base := widget.NewTableWithHeaders(
+		func() (int, int) {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			return len(a.items), len(columnTitles)
+		},
+		func() fyne.CanvasObject {
+			return container.NewMax(widget.NewLabel(""), widget.NewProgressBar())
+		},
+		a.updateCell,
+	)
+	base.ShowHeaderColumn = false
+	base.OnSelected = func(id widget.TableCellID) {
+		if id.Row >= 0 {
+			a.selectedRow = id.Row
+		}
+	}
+	base.CreateHeader = func() fyne.CanvasObject { return widget.NewLabel("") }
+	base.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
+		if id.Col >= 0 && id.Col < len(columnTitles) {
+			o.(*widget.Label).SetText(columnTitles[id.Col])
+		}
+	}
+	for i, w := range []float32{260, 90, 150, 100, 100, 120, 240} {
+		base.SetColumnWidth(i, w)
+	}
+	a.table = &downloadTable{Table: base, app: a}
+
+	a.cats = widget.NewList(
+		func() int {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			return len(a.catEntries)
+		},
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(id widget.ListItemID, o fyne.CanvasObject) {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if id >= 0 && id < len(a.catEntries) {
+				o.(*widget.Label).SetText(a.catEntries[id].text)
+			}
+		},
+	)
+	a.cats.OnSelected = func(id widget.ListItemID) {
+		a.mu.Lock()
+		if id >= 0 && id < len(a.catEntries) {
+			a.filter.kind = a.catEntries[id].kind
+			a.filter.value = a.catEntries[id].value
+		}
+		a.mu.Unlock()
+		a.refresh()
+	}
+
+	a.status = widget.NewLabel("")
+
+	sidebar := container.NewBorder(widget.NewLabel("  Categories"), nil, nil, nil, a.cats)
+	split := container.NewHSplit(sidebar, a.table)
+	split.Offset = 0.22
+
+	a.win.SetContent(container.NewBorder(top, a.status, nil, nil, split))
+}
+
+func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
+	box := o.(*fyne.Container)
+	lbl := box.Objects[0].(*widget.Label)
+	bar := box.Objects[1].(*widget.ProgressBar)
+	bar.TextFormatter = func() string { return fmt.Sprintf("%.0f%%", bar.Value*100) }
+
+	a.mu.Lock()
+	if id.Row < 0 || id.Row >= len(a.items) {
+		a.mu.Unlock()
+		lbl.SetText("")
+		lbl.Show()
+		bar.Hide()
+		return
+	}
+	d := a.items[id.Row]
+	a.mu.Unlock()
+
+	if id.Col == colProgress {
+		lbl.Hide()
+		bar.Show()
+		val := 0.0
+		if d.Total > 0 {
+			val = d.Progress / 100
+		}
+		bar.SetValue(val)
+		return
+	}
+	bar.Hide()
+	lbl.Show()
+	switch id.Col {
+	case colName:
+		lbl.SetText(d.FileName)
+	case colSize:
+		lbl.SetText(humanBytes(d.Total))
+	case colStatus:
+		if d.Error != "" {
+			lbl.SetText(d.Error)
+		} else {
+			lbl.SetText(string(d.Status))
+		}
+	case colETA:
+		lbl.SetText(etaText(d))
+	case colRate:
+		lbl.SetText(rateText(d))
+	case colPath:
+		lbl.SetText(d.Dir)
+	}
+}
+
+func (a *application) loop() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		mw := a.mw
-		if mw == nil {
-			return
-		}
-		mw.Synchronize(func() {
-			if mw.IsDisposed() {
-				return
-			}
-			a.refresh()
-		})
+		fyne.Do(a.refresh)
 	}
 }
 
@@ -176,27 +245,17 @@ func (a *application) refresh() {
 			filtered = append(filtered, d)
 		}
 	}
-	ids := make([]string, len(filtered))
-	for i, d := range filtered {
-		ids[i] = d.ID
-	}
-	sig := strings.Join(ids, ",")
 
 	a.mu.Lock()
 	a.items = filtered
+	a.catEntries = buildCategoryEntries(all)
 	a.mu.Unlock()
 
-	if sig != a.rowSig {
-		a.rowSig = sig
-		a.model.PublishRowsReset()
-	} else if len(filtered) > 0 {
-		a.model.PublishRowsChanged(0, len(filtered)-1)
+	if a.table != nil {
+		a.table.Refresh()
 	}
-
-	if next := buildCategoryTree(all); next.sig != a.treeMod.sig {
-		a.treeMod.roots = next.roots
-		a.treeMod.sig = next.sig
-		a.treeMod.PublishItemsReset(nil)
+	if a.cats != nil {
+		a.cats.Refresh()
 	}
 
 	active, speed := 0, int64(0)
@@ -206,47 +265,42 @@ func (a *application) refresh() {
 			speed += d.Speed
 		}
 	}
-	if a.stat != nil {
+	if a.status != nil {
 		if active > 0 {
-			a.stat.SetText(fmt.Sprintf("  %d active · %s/s · %d items", active, humanBytes(speed), len(all)))
+			a.status.SetText(fmt.Sprintf("  %d active · %s/s · %d items", active, humanBytes(speed), len(all)))
 		} else {
-			a.stat.SetText(fmt.Sprintf("  %d items", len(all)))
+			a.status.SetText(fmt.Sprintf("  %d items", len(all)))
 		}
+	}
+
+	for id, v := range a.progressWindows {
+		if v.win == nil {
+			continue
+		}
+		a.updateProgressWindow(id)
 	}
 }
 
 func (a *application) matches(d engine.Info) bool {
-	switch a.filter.kind {
+	a.mu.Lock()
+	kind, value := a.filter.kind, a.filter.value
+	a.mu.Unlock()
+	switch kind {
 	case "unfinished":
 		return d.Status != engine.StatusComplete
 	case "finished":
 		return d.Status == engine.StatusComplete
 	case "category":
-		return d.Category == a.filter.value
+		return d.Category == value
 	default:
 		return true
 	}
 }
 
-func (a *application) onCategoryChanged() {
-	item, ok := a.tree.CurrentItem().(*catItem)
-	if !ok || item == nil {
-		return
-	}
-	a.filter.kind, a.filter.value = item.kind, item.value
-	a.refresh()
-}
-
-func (a *application) onRowChanged() {
-	if _, ok := a.currentDownload(); ok {
-		return
-	}
-}
-
-func (a *application) currentDownload() (*engine.Info, bool) {
-	idx := a.tv.CurrentIndex()
+func (a *application) current() (*engine.Info, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	idx := a.selectedRow
 	if idx < 0 || idx >= len(a.items) {
 		return nil, false
 	}
@@ -254,11 +308,47 @@ func (a *application) currentDownload() (*engine.Info, bool) {
 	return &cp, true
 }
 
-/* ---------- actions ---------- */
+func (a *application) byID(id string) (*engine.Info, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.items {
+		if a.items[i].ID == id {
+			cp := a.items[i]
+			return &cp, true
+		}
+	}
+	return nil, false
+}
+
+func (a *application) showRowMenu(pos fyne.Position) {
+	d, ok := a.current()
+	if !ok {
+		return
+	}
+	items := []*fyne.MenuItem{fyne.NewMenuItem("Show progress", func() { a.openProgressWindow(d.ID) })}
+	if d.Status == engine.StatusComplete {
+		items = append(items, fyne.NewMenuItem("Open file", func() { openPath(d.FilePath) }))
+	}
+	items = append(items,
+		fyne.NewMenuItem("Open folder", func() { revealPath(d.FilePath) }),
+		fyne.NewMenuItem("Pause / Resume", func() {
+			if d.Status == engine.StatusDownloading || d.Status == engine.StatusQueued {
+				a.mgr.Pause(d.ID)
+			} else {
+				a.mgr.Resume(d.ID)
+			}
+			a.refresh()
+		}),
+		fyne.NewMenuItem("Remove from list", func() { a.removeSelected(false) }),
+		fyne.NewMenuItem("Remove + delete file", func() { a.removeSelected(true) }),
+	)
+	pop := widget.NewPopUpMenu(fyne.NewMenu("", items...), a.win.Canvas())
+	pop.ShowAtPosition(pos)
+}
 
 func (a *application) resumeSelected() {
-	if info, ok := a.currentDownload(); ok {
-		a.mgr.Resume(info.ID)
+	if d, ok := a.current(); ok {
+		a.mgr.Resume(d.ID)
 	} else {
 		a.mgr.ResumeAll()
 	}
@@ -266,51 +356,106 @@ func (a *application) resumeSelected() {
 }
 
 func (a *application) stopSelected() {
-	if info, ok := a.currentDownload(); ok {
-		a.mgr.Pause(info.ID)
+	if d, ok := a.current(); ok {
+		a.mgr.Pause(d.ID)
 	} else {
 		a.mgr.PauseAll()
 	}
 	a.refresh()
 }
 
-func (a *application) toggleSelected() {
-	if info, ok := a.currentDownload(); ok {
-		if info.Status == engine.StatusDownloading || info.Status == engine.StatusQueued {
-			a.mgr.Pause(info.ID)
-		} else {
-			a.mgr.Resume(info.ID)
-		}
-		a.refresh()
-	}
-}
-
 func (a *application) deleteSelected() {
-	info, ok := a.currentDownload()
+	d, ok := a.current()
 	if !ok {
 		return
 	}
-	yes := walk.MsgBox(a.mw, "Delete",
-		fmt.Sprintf("Remove \"%s\" from the list? (file kept)", info.FileName),
-		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) == walk.DlgCmdYes
-	if yes {
-		a.mgr.Remove(info.ID)
-		a.refresh()
-	}
+	dialogConfirm(a.win, "Delete", fmt.Sprintf("Remove \"%s\" from the list? (file kept)", d.FileName), func(yes bool) {
+		if yes {
+			a.mgr.Remove(d.ID)
+			a.refresh()
+		}
+	})
 }
 
 func (a *application) removeSelected(withFile bool) {
-	info, ok := a.currentDownload()
+	d, ok := a.current()
 	if !ok {
 		return
 	}
-	msg := fmt.Sprintf("Remove \"%s\" from the list? (file kept)", info.FileName)
+	msg := fmt.Sprintf("Remove \"%s\" from the list? (file kept)", d.FileName)
 	if withFile {
-		msg = fmt.Sprintf("Delete \"%s\" from disk too?", info.FileName)
+		msg = fmt.Sprintf("Delete \"%s\" from disk too?", d.FileName)
 	}
-	yes := walk.MsgBox(a.mw, "Delete", msg, walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) == walk.DlgCmdYes
-	if yes {
-		a.mgr.RemoveWithFile(info.ID, withFile)
-		a.refresh()
+	dialogConfirm(a.win, "Delete", msg, func(yes bool) {
+		if yes {
+			a.mgr.RemoveWithFile(d.ID, withFile)
+			a.refresh()
+		}
+	})
+}
+
+func iconButton(label string, icon fyne.Resource, fn func()) *widget.Button {
+	b := widget.NewButtonWithIcon(label, icon, fn)
+	b.Importance = widget.LowImportance
+	return b
+}
+
+func buildCategoryEntries(items []engine.Info) []catEntry {
+	counts := map[string]int{}
+	unfinished, finished := 0, 0
+	for _, d := range items {
+		counts[d.Category]++
+		if d.Status == engine.StatusComplete {
+			finished++
+		} else {
+			unfinished++
+		}
 	}
+	out := []catEntry{{text: fmt.Sprintf("All Downloads (%d)", len(items)), kind: "all"}}
+	out = append(out, catEntry{text: "— Categories —"})
+	for _, name := range engine.Categories() {
+		out = append(out, catEntry{text: fmt.Sprintf("  %s (%d)", name, counts[name]), kind: "category", value: name})
+	}
+	out = append(out, catEntry{text: "— Status —"})
+	out = append(out,
+		catEntry{text: fmt.Sprintf("  Unfinished (%d)", unfinished), kind: "unfinished"},
+		catEntry{text: fmt.Sprintf("  Finished (%d)", finished), kind: "finished"},
+	)
+	return out
+}
+
+func humanBytes(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	v := float64(n)
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%.0f %s", v, units[i])
+	}
+	return fmt.Sprintf("%.1f %s", v, units[i])
+}
+
+func rateText(d engine.Info) string {
+	if d.Status != engine.StatusDownloading || d.Speed <= 0 {
+		return ""
+	}
+	return humanBytes(d.Speed) + "/s"
+}
+
+func etaText(d engine.Info) string {
+	if d.Status != engine.StatusDownloading || d.Speed <= 0 || d.Total <= 0 {
+		return ""
+	}
+	secs := float64(d.Total-d.Done) / float64(d.Speed)
+	m, s := int(secs)/60, int(secs)%60
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }

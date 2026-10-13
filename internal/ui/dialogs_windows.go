@@ -5,52 +5,26 @@ package ui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/lxn/walk"
-	. "github.com/lxn/walk/declarative"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 
 	"odm/internal/engine"
+	"odm/internal/osutil"
 )
 
-/* ---------- connection model (progress window) ---------- */
+func openPath(p string)   { _ = osutil.Open(p) }
+func revealPath(p string) { _ = osutil.Reveal(p) }
 
-type connModel struct {
-	walk.TableModelBase
-	mu   sync.Mutex
-	rows []engine.ChunkInfo
-}
-
-func (m *connModel) RowCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.rows)
-}
-
-func (m *connModel) Value(row, col int) interface{} {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if row < 0 || row >= len(m.rows) {
-		return ""
-	}
-	c := m.rows[row]
-	switch col {
-	case 0:
-		return row + 1
-	case 1:
-		return humanBytes(c.Done)
-	case 2:
-		return c.State
-	}
-	return ""
-}
-
-func (m *connModel) set(rows []engine.ChunkInfo) {
-	m.mu.Lock()
-	m.rows = rows
-	m.mu.Unlock()
-	m.PublishRowsReset()
+func dialogConfirm(parent fyne.Window, title, msg string, fn func(bool)) {
+	dialog.NewConfirm(title, msg, fn, parent).Show()
 }
 
 /* ---------- Add: "Download File Info" ---------- */
@@ -58,63 +32,31 @@ func (m *connModel) set(rows []engine.ChunkInfo) {
 func (a *application) openAddDialog() {
 	settings := a.mgr.Settings()
 
-	var dlg *walk.Dialog
-	var urlEdit, folderEdit, nameEdit *walk.LineEdit
-	var connEdit *walk.NumberEdit
-	var catBox *walk.ComboBox
-	var sizeLabel, typeLabel *walk.Label
-	var startBtn, laterBtn, cancelBtn *walk.PushButton
+	urlEntry := widget.NewEntry()
+	urlEntry.SetPlaceHolder("https://host/file.zip")
+	catSelect := widget.NewSelect(engine.Categories(), nil)
+	catSelect.SetSelected("Other")
+	folderEntry := widget.NewEntry()
+	folderEntry.SetText(settings.Dir)
+	nameEntry := widget.NewEntry()
+	connEntry := widget.NewEntry()
+	connEntry.SetText(fmt.Sprint(settings.Connections))
+	sizeLabel := widget.NewLabel("Size: —")
+	typeLabel := widget.NewLabel("")
 
-	start := true
-
-	d := Dialog{
-		AssignTo:      &dlg,
-		Title:         "Download File Info",
-		Size:          Size{Width: 660, Height: 460},
-		Layout:        VBox{},
-		DefaultButton: &startBtn,
-		CancelButton:  &cancelBtn,
-		Children: []Widget{
-			Label{Text: "URL"},
-			LineEdit{AssignTo: &urlEdit},
-			Label{Text: "Category"},
-			ComboBox{AssignTo: &catBox, Model: engine.Categories()},
-			Label{Text: "Save folder"},
-			LineEdit{AssignTo: &folderEdit, Text: settings.Dir},
-			Label{Text: "File name"},
-			LineEdit{AssignTo: &nameEdit},
-			Label{Text: "Connections"},
-			NumberEdit{AssignTo: &connEdit, Decimals: 0, MinValue: 1, MaxValue: 32, Value: float64(settings.Connections)},
-			Label{AssignTo: &sizeLabel, Text: "Size: —"},
-			Label{AssignTo: &typeLabel, Text: ""},
-			Composite{
-				Layout: HBox{},
-				Children: []Widget{
-					HSpacer{},
-					PushButton{AssignTo: &laterBtn, Text: "Download Later", OnClicked: func() { start = false; dlg.Accept() }},
-					PushButton{AssignTo: &cancelBtn, Text: "Cancel", OnClicked: func() { dlg.Cancel() }},
-					PushButton{AssignTo: &startBtn, Text: "Start Download", OnClicked: func() { start = true; dlg.Accept() }},
-				},
-			},
-		},
-	}
-	if err := d.Create(a.mw); err != nil {
-		return
-	}
-
-	urlEdit.EditingFinished().Attach(func() {
-		raw := urlEdit.Text()
-		if len(raw) < 8 {
+	var probeTimer *time.Timer
+	urlEntry.OnChanged = func(s string) {
+		if probeTimer != nil {
+			probeTimer.Stop()
+		}
+		if !strings.HasPrefix(s, "http") {
 			return
 		}
-		go func() {
+		probeTimer = time.AfterFunc(600*time.Millisecond, func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			p, err := a.mgr.Probe(ctx, raw, nil)
-			dlg.Synchronize(func() {
-				if dlg.IsDisposed() {
-					return
-				}
+			p, err := a.mgr.Probe(ctx, s, nil)
+			fyne.Do(func() {
 				if err != nil {
 					sizeLabel.SetText("Size: —")
 					typeLabel.SetText(err.Error())
@@ -122,39 +64,51 @@ func (a *application) openAddDialog() {
 				}
 				sizeLabel.SetText("Size: " + humanBytes(p.Total))
 				typeLabel.SetText(p.ContentType)
-				if nameEdit.Text() == "" {
-					nameEdit.SetText(p.FileName)
+				if nameEntry.Text == "" {
+					nameEntry.SetText(p.FileName)
 				}
-				for i, c := range engine.Categories() {
-					if c == engine.Category(p.FileName) {
-						_ = catBox.SetCurrentIndex(i)
-						break
-					}
-				}
+				catSelect.SetSelected(engine.Category(p.FileName))
 			})
-		}()
-	})
+		})
+	}
 
-	if dlg.Run() != walk.DlgCmdOK {
-		return
+	form := widget.NewForm(
+		widget.NewFormItem("URL", urlEntry),
+		widget.NewFormItem("Category", catSelect),
+		widget.NewFormItem("Save folder", folderEntry),
+		widget.NewFormItem("File name", nameEntry),
+		widget.NewFormItem("Connections", connEntry),
+	)
+	content := container.NewVBox(form, sizeLabel, typeLabel)
+
+	dlg := dialog.NewCustomWithoutButtons("Download File Info", content, a.win)
+
+	create := func(start bool) {
+		conns := settings.Connections
+		fmt.Sscanf(connEntry.Text, "%d", &conns)
+		url := strings.TrimSpace(urlEntry.Text)
+		if url == "" {
+			return
+		}
+		a.mgr.Create(engine.AddOptions{
+			URL:         url,
+			Dir:         strings.TrimSpace(folderEntry.Text),
+			FileName:    strings.TrimSpace(nameEntry.Text),
+			Connections: conns,
+			Category:    catSelect.Selected,
+			Start:       start,
+		})
+		dlg.Hide()
+		a.refresh()
 	}
-	url := urlEdit.Text()
-	if len(url) == 0 {
-		return
-	}
-	cat := ""
-	if i := catBox.CurrentIndex(); i >= 0 && i < len(engine.Categories()) {
-		cat = engine.Categories()[i]
-	}
-	a.mgr.Create(engine.AddOptions{
-		URL:         url,
-		Dir:         folderEdit.Text(),
-		FileName:    nameEdit.Text(),
-		Connections: int(connEdit.Value()),
-		Category:    cat,
-		Start:       start,
-	})
-	a.refresh()
+
+	startBtn := widget.NewButtonWithIcon("Start Download", theme.ConfirmIcon(), func() { create(true) })
+	startBtn.Importance = widget.HighImportance
+	laterBtn := widget.NewButtonWithIcon("Download Later", theme.ContentAddIcon(), func() { create(false) })
+	cancelBtn := widget.NewButton("Cancel", func() { dlg.Hide() })
+	dlg.SetButtons([]fyne.CanvasObject{laterBtn, cancelBtn, startBtn})
+	dlg.Resize(fyne.NewSize(620, 420))
+	dlg.Show()
 }
 
 /* ---------- Options ---------- */
@@ -162,198 +116,194 @@ func (a *application) openAddDialog() {
 func (a *application) openOptionsDialog() {
 	settings := a.mgr.Settings()
 
-	var dlg *walk.Dialog
-	var dirEdit *walk.LineEdit
-	var connEdit, concEdit, limitEdit *walk.NumberEdit
-	var catsCheck, clipCheck *walk.CheckBox
-	var saveBtn, closeBtn *walk.PushButton
+	dirEntry := widget.NewEntry()
+	dirEntry.SetText(settings.Dir)
+	connEntry := widget.NewEntry()
+	connEntry.SetText(fmt.Sprint(settings.Connections))
+	concEntry := widget.NewEntry()
+	concEntry.SetText(fmt.Sprint(settings.Concurrent))
+	limitEntry := widget.NewEntry()
+	limitEntry.SetText(fmt.Sprint(settings.SpeedLimit / 1024))
+	catsCheck := widget.NewCheck("Put files in category subfolders", nil)
+	catsCheck.SetChecked(settings.Categories)
+	clipCheck := widget.NewCheck("Watch clipboard for downloadable URLs", nil)
+	clipCheck.SetChecked(settings.Clipboard)
 
-	d := Dialog{
-		AssignTo:      &dlg,
-		Title:         "Options",
-		Size:          Size{Width: 560, Height: 420},
-		Layout:        VBox{},
-		DefaultButton: &saveBtn,
-		CancelButton:  &closeBtn,
-		Children: []Widget{
-			Label{Text: "Default folder"},
-			LineEdit{AssignTo: &dirEdit, Text: settings.Dir},
-			Label{Text: "Connections per file"},
-			NumberEdit{AssignTo: &connEdit, Decimals: 0, MinValue: 1, MaxValue: 32, Value: float64(settings.Connections)},
-			Label{Text: "Simultaneous downloads"},
-			NumberEdit{AssignTo: &concEdit, Decimals: 0, MinValue: 1, MaxValue: 16, Value: float64(settings.Concurrent)},
-			Label{Text: "Global speed limit (KB/s, 0 = off)"},
-			NumberEdit{AssignTo: &limitEdit, Decimals: 0, MinValue: 0, MaxValue: 10000000, Value: float64(settings.SpeedLimit / 1024)},
-			CheckBox{AssignTo: &catsCheck, Text: "Put files in category subfolders", Checked: settings.Categories},
-			CheckBox{AssignTo: &clipCheck, Text: "Watch clipboard for downloadable URLs (Windows)", Checked: settings.Clipboard},
-			Composite{
-				Layout: HBox{},
-				Children: []Widget{
-					HSpacer{},
-					PushButton{AssignTo: &closeBtn, Text: "Close", OnClicked: func() { dlg.Cancel() }},
-					PushButton{AssignTo: &saveBtn, Text: "Save", OnClicked: func() { dlg.Accept() }},
-				},
-			},
-		},
+	form := widget.NewForm(
+		widget.NewFormItem("Default folder", dirEntry),
+		widget.NewFormItem("Connections per file", connEntry),
+		widget.NewFormItem("Simultaneous downloads", concEntry),
+		widget.NewFormItem("Global speed limit (KB/s, 0 = off)", limitEntry),
+	)
+	content := container.NewVBox(form, catsCheck, clipCheck)
+
+	dlg := dialog.NewCustomWithoutButtons("Options", content, a.win)
+	save := func() {
+		conns, conc, limit := settings.Connections, settings.Concurrent, settings.SpeedLimit/1024
+		fmt.Sscanf(connEntry.Text, "%d", &conns)
+		fmt.Sscanf(concEntry.Text, "%d", &conc)
+		fmt.Sscanf(limitEntry.Text, "%d", &limit)
+		a.mgr.UpdateSettings(engine.Settings{
+			Dir:         strings.TrimSpace(dirEntry.Text),
+			Connections: conns,
+			Concurrent:  conc,
+			SpeedLimit:  limit * 1024,
+			Categories:  catsCheck.Checked,
+			Clipboard:   clipCheck.Checked,
+		})
+		dlg.Hide()
+		a.refresh()
 	}
-	if err := d.Create(a.mw); err != nil {
-		return
-	}
-	if dlg.Run() != walk.DlgCmdOK {
-		return
-	}
-	a.mgr.UpdateSettings(engine.Settings{
-		Dir:         dirEdit.Text(),
-		Connections: int(connEdit.Value()),
-		Concurrent:  int(concEdit.Value()),
-		SpeedLimit:  int64(limitEdit.Value()) * 1024,
-		Categories:  catsCheck.Checked(),
-		Clipboard:   clipCheck.Checked(),
-	})
-	a.refresh()
+	closeBtn := widget.NewButton("Close", func() { dlg.Hide() })
+	saveBtn := widget.NewButtonWithIcon("Save", theme.ConfirmIcon(), save)
+	saveBtn.Importance = widget.HighImportance
+	dlg.SetButtons([]fyne.CanvasObject{closeBtn, saveBtn})
+	dlg.Resize(fyne.NewSize(560, 380))
+	dlg.Show()
 }
 
 /* ---------- Progress window ---------- */
 
-func (a *application) openProgressDialog() {
-	info, ok := a.currentDownload()
-	if !ok {
+type progressView struct {
+	win        fyne.Window
+	url        *widget.Label
+	status     *widget.Label
+	size       *widget.Label
+	done       *widget.Label
+	rate       *widget.Label
+	eta        *widget.Label
+	resume     *widget.Label
+	bar        *widget.ProgressBar
+	conns      *widget.Table
+	connRows   []engine.ChunkInfo
+	connMu     sync.Mutex
+	pauseBtn   *widget.Button
+	limitEntry *widget.Entry
+	openCheck  *widget.Check
+}
+
+func (a *application) openProgressWindow(id string) {
+	if v, ok := a.progressWindows[id]; ok {
+		v.win.Show()
+		v.win.RequestFocus()
+		a.updateProgressWindow(id)
 		return
 	}
-	id := info.ID
+	if _, ok := a.byID(id); !ok {
+		return
+	}
 
-	var dlg *walk.Dialog
-	var urlLabel, statusLabel, sizeLabel, doneLabel, rateLabel, etaLabel, resumeLabel *walk.Label
-	var bar *walk.ProgressBar
-	var conns *walk.TableView
-	var limitEdit *walk.NumberEdit
-	var openCheck *walk.CheckBox
-	var pauseBtn, applyBtn, closeBtn *walk.PushButton
+	v := &progressView{}
+	v.win = a.fyneApp.NewWindow("Download")
+	v.win.Resize(fyne.NewSize(720, 540))
 
-	model := &connModel{}
+	v.url = widget.NewLabel("")
+	v.status = widget.NewLabel("")
+	v.size = widget.NewLabel("")
+	v.done = widget.NewLabel("")
+	v.rate = widget.NewLabel("")
+	v.eta = widget.NewLabel("")
+	v.resume = widget.NewLabel("")
+	v.bar = widget.NewProgressBar()
+	v.bar.TextFormatter = func() string { return fmt.Sprintf("%.0f%%", v.bar.Value*100) }
 
-	d := Dialog{
-		AssignTo:     &dlg,
-		Title:        "Download",
-		Size:         Size{Width: 700, Height: 560},
-		Layout:       VBox{},
-		CancelButton: &closeBtn,
-		Children: []Widget{
-			TabWidget{
-				Pages: []TabPage{
-					{
-						Title:  "Download status",
-						Layout: VBox{},
-						Children: []Widget{
-							Label{Text: "URL"}, Label{AssignTo: &urlLabel, Text: ""},
-							Label{Text: "Status"}, Label{AssignTo: &statusLabel, Text: ""},
-							Label{Text: "File size"}, Label{AssignTo: &sizeLabel, Text: ""},
-							Label{Text: "Downloaded"}, Label{AssignTo: &doneLabel, Text: ""},
-							Label{Text: "Transfer rate"}, Label{AssignTo: &rateLabel, Text: ""},
-							Label{Text: "Time left"}, Label{AssignTo: &etaLabel, Text: ""},
-							Label{Text: "Resume capability"}, Label{AssignTo: &resumeLabel, Text: ""},
-							ProgressBar{AssignTo: &bar, MaxValue: 1000},
-							TableView{
-								AssignTo:         &conns,
-								AlternatingRowBG: true,
-								Columns: []TableViewColumn{
-									{Title: "N", Width: 40},
-									{Title: "Downloaded", Width: 140, Alignment: AlignFar},
-									{Title: "Info", Width: 320},
-								},
-								Model:   model,
-								MinSize: Size{Height: 120},
-							},
-						},
-					},
-					{
-						Title:  "Speed Limiter",
-						Layout: VBox{},
-						Children: []Widget{
-							Label{Text: "Limit (KB/s, 0 = unlimited)"},
-							NumberEdit{AssignTo: &limitEdit, Decimals: 0, MinValue: 0, MaxValue: 10000000},
-							PushButton{AssignTo: &applyBtn, Text: "Apply"},
-						},
-					},
-					{
-						Title:  "Options on completion",
-						Layout: VBox{},
-						Children: []Widget{
-							CheckBox{AssignTo: &openCheck, Text: "Open file when done"},
-						},
-					},
-				},
-			},
-			Composite{
-				Layout: HBox{},
-				Children: []Widget{
-					HSpacer{},
-					PushButton{AssignTo: &pauseBtn, Text: "Pause"},
-					PushButton{AssignTo: &closeBtn, Text: "Close", OnClicked: func() { dlg.Cancel() }},
-				},
-			},
+	v.conns = widget.NewTable(
+		func() (int, int) {
+			v.connMu.Lock()
+			defer v.connMu.Unlock()
+			return len(v.connRows), 3
 		},
-	}
-	if err := d.Create(a.mw); err != nil {
-		return
-	}
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(cell widget.TableCellID, o fyne.CanvasObject) {
+			v.connMu.Lock()
+			defer v.connMu.Unlock()
+			lbl := o.(*widget.Label)
+			if cell.Row < 0 || cell.Row >= len(v.connRows) {
+				lbl.SetText("")
+				return
+			}
+			c := v.connRows[cell.Row]
+			switch cell.Col {
+			case 0:
+				lbl.SetText(fmt.Sprint(cell.Row + 1))
+			case 1:
+				lbl.SetText(humanBytes(c.Done))
+			case 2:
+				lbl.SetText(c.State)
+			}
+		},
+	)
+	v.conns.SetColumnWidth(0, 50)
+	v.conns.SetColumnWidth(1, 200)
+	v.conns.SetColumnWidth(2, 380)
 
-	pauseBtn.Clicked().Attach(func() {
-		if cur, ok := a.mgr.Get(id); ok {
-			if cur.Status == engine.StatusDownloading || cur.Status == engine.StatusQueued {
+	statusTab := container.NewBorder(
+		container.NewVBox(
+			widget.NewForm(
+				widget.NewFormItem("URL", v.url),
+				widget.NewFormItem("Status", v.status),
+				widget.NewFormItem("File size", v.size),
+				widget.NewFormItem("Downloaded", v.done),
+				widget.NewFormItem("Transfer rate", v.rate),
+				widget.NewFormItem("Time left", v.eta),
+				widget.NewFormItem("Resume capability", v.resume),
+			),
+			v.bar,
+		),
+		nil, nil, nil,
+		v.conns,
+	)
+
+	v.limitEntry = widget.NewEntry()
+	limitTab := container.NewVBox(
+		widget.NewForm(widget.NewFormItem("Limit (KB/s, 0 = unlimited)", v.limitEntry)),
+		widget.NewButtonWithIcon("Apply", theme.ConfirmIcon(), func() {
+			limit := 0
+			fmt.Sscanf(v.limitEntry.Text, "%d", &limit)
+			a.mgr.SetSpeedLimit(id, int64(limit)*1024)
+		}),
+	)
+
+	v.openCheck = widget.NewCheck("Open file when done", func(b bool) { a.mgr.SetOpenWhenDone(id, b) })
+	compTab := container.NewVBox(v.openCheck)
+
+	tabs := container.NewAppTabs(
+		container.NewTabItemWithIcon("Download status", theme.InfoIcon(), statusTab),
+		container.NewTabItemWithIcon("Speed Limiter", theme.MediaPauseIcon(), limitTab),
+		container.NewTabItemWithIcon("Options on completion", theme.SettingsIcon(), compTab),
+	)
+
+	v.pauseBtn = widget.NewButtonWithIcon("Pause", theme.MediaPauseIcon(), func() {
+		if d, ok := a.mgr.Get(id); ok {
+			if d.Status == engine.StatusDownloading || d.Status == engine.StatusQueued {
 				a.mgr.Pause(id)
 			} else {
 				a.mgr.Resume(id)
 			}
 		}
 	})
-	applyBtn.Clicked().Attach(func() {
-		a.mgr.SetSpeedLimit(id, int64(limitEdit.Value())*1024)
-	})
-	openCheck.CheckedChanged().Attach(func() {
-		a.mgr.SetOpenWhenDone(id, openCheck.Checked())
-	})
+	closeBtn := widget.NewButton("Close", func() { v.win.Close() })
 
-	stop := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				cur, ok := a.mgr.Get(id)
-				if !ok {
-					continue
-				}
-				dlg.Synchronize(func() {
-					if dlg.IsDisposed() {
-						return
-					}
-					renderProgress(cur, dlg, model, urlLabel, statusLabel, sizeLabel, doneLabel, rateLabel, etaLabel, resumeLabel, bar, pauseBtn, limitEdit, openCheck)
-				})
-			}
-		}
-	}()
+	w := v.win
+	w.SetContent(container.NewBorder(nil, container.NewHBox(layout.NewSpacer(), v.pauseBtn, closeBtn), nil, nil, tabs))
+	w.SetOnClosed(func() { delete(a.progressWindows, id) })
 
-	dlg.Run()
-	close(stop)
-	a.refresh()
+	a.progressWindows[id] = v
+	a.updateProgressWindow(id)
+	w.Show()
 }
 
-func renderProgress(
-	d engine.Info,
-	dlg *walk.Dialog,
-	model *connModel,
-	urlLabel, statusLabel, sizeLabel, doneLabel, rateLabel, etaLabel, resumeLabel *walk.Label,
-	bar *walk.ProgressBar,
-	pauseBtn *walk.PushButton,
-	limitEdit *walk.NumberEdit,
-	openCheck *walk.CheckBox,
-) {
-	_ = dlg.SetTitle(fmt.Sprintf("%.0f%% %s", d.Progress, d.FileName))
-	urlLabel.SetText(d.URL)
+func (a *application) updateProgressWindow(id string) {
+	v, ok := a.progressWindows[id]
+	if !ok {
+		return
+	}
+	d, ok := a.mgr.Get(id)
+	if !ok {
+		return
+	}
+	v.win.SetTitle(fmt.Sprintf("%.0f%% %s", d.Progress, d.FileName))
+	v.url.SetText(d.URL)
 	status := string(d.Status)
 	if d.Status == engine.StatusDownloading {
 		status = "Receiving data…"
@@ -361,32 +311,36 @@ func renderProgress(
 	if d.Error != "" {
 		status += " — " + d.Error
 	}
-	statusLabel.SetText(status)
-	sizeLabel.SetText(textOrDash(humanBytes(d.Total)))
-	doneLabel.SetText(fmt.Sprintf("%s (%.2f %%)", humanBytes(d.Done), d.Progress))
-	rateLabel.SetText(textOrDash(rateText(d)))
-	etaLabel.SetText(textOrDash(etaText(d)))
+	v.status.SetText(status)
+	v.size.SetText(dash(humanBytes(d.Total)))
+	v.done.SetText(fmt.Sprintf("%s (%.2f %%)", humanBytes(d.Done), d.Progress))
+	v.rate.SetText(dash(rateText(d)))
+	v.eta.SetText(dash(etaText(d)))
 	if d.RangeOK {
-		resumeLabel.SetText("Yes")
+		v.resume.SetText("Yes")
 	} else {
-		resumeLabel.SetText("No")
+		v.resume.SetText("No")
 	}
-	bar.SetValue(int(d.Progress * 10))
-
-	model.set(d.Chunks)
-
+	if d.Total > 0 {
+		v.bar.SetValue(d.Progress / 100)
+	}
 	if d.Status == engine.StatusDownloading || d.Status == engine.StatusQueued {
-		pauseBtn.SetText("Pause")
+		v.pauseBtn.SetText("Pause")
 	} else {
-		pauseBtn.SetText("Resume")
+		v.pauseBtn.SetText("Resume")
 	}
-	if limitEdit.Value() == 0 && d.SpeedLimit > 0 {
-		limitEdit.SetValue(float64(d.SpeedLimit / 1024))
+	if v.limitEntry.Text == "" && d.SpeedLimit > 0 {
+		v.limitEntry.SetText(fmt.Sprint(d.SpeedLimit / 1024))
 	}
-	openCheck.SetChecked(d.OpenWhenDone)
+	v.openCheck.SetChecked(d.OpenWhenDone)
+
+	v.connMu.Lock()
+	v.connRows = d.Chunks
+	v.connMu.Unlock()
+	v.conns.Refresh()
 }
 
-func textOrDash(s string) string {
+func dash(s string) string {
 	if s == "" {
 		return "-"
 	}
