@@ -23,7 +23,7 @@ func NewPlan(total int64, conns int) []*Chunk {
 		start = end + 1
 	}
 	// Fold a too-small tail into the previous chunk instead of scheduling a
-	// tiny request, matching the reference product's minimum-chunk behaviour.
+	// tiny request, matching the minimum-chunk behaviour.
 	if n := len(chunks); n > 1 && chunks[n-1].Size() < MinChunkSize {
 		chunks[n-2].End = chunks[n-1].End
 		chunks = chunks[:n-1]
@@ -32,7 +32,7 @@ func NewPlan(total int64, conns int) []*Chunk {
 }
 
 // Split carves the tail half off the largest incomplete chunk and returns it
-// as a new chunk, mirroring the reference product's "alternative connection".
+// as a new chunk for a freed connection.
 // It reports false when no chunk is big enough to split safely.
 func Split(chunks []*Chunk, minChunk int64) (*Chunk, bool) {
 	var victim *Chunk

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Build CLI
+        run: CGO_ENABLED=0 go build -o /tmp/odm ./cmd/odm
+
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: odm-linux-amd64
+          - os: macos-latest
+            artifact: odm-darwin-arm64
+          - os: windows-latest
+            artifact: ODM-windows-amd64.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Install Linux GL/X11 deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libxkbcommon-dev
+
+      - name: Install MinGW (Windows)
+        if: runner.os == 'Windows'
+        run: choco install mingw --no-progress -y
+
+      - name: Build desktop UI
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
+              go build -tags fyne -trimpath -ldflags "-s -w -H=windowsgui" \
+              -o "dist/${{ matrix.artifact }}" ./cmd/odm
+          else
+            CGO_ENABLED=1 go build -tags fyne -trimpath -ldflags "-s -w" \
+              -o "dist/${{ matrix.artifact }}" ./cmd/odm
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*

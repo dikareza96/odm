@@ -1,4 +1,4 @@
-//go:build windows
+//go:build fyne
 
 // Package ui implements the ODM desktop interface with Fyne: a menu bar, an
 // icon toolbar, a category/queue sidebar, a sortable report table and dialogs,

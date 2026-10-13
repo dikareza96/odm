@@ -1,4 +1,4 @@
-//go:build windows
+//go:build fyne
 
 package ui
 
@@ -326,7 +326,7 @@ func (a *application) openGrabberDialog() {
 	)
 	content := container.NewVBox(form, sameHost, startNow, info)
 
-	dlg := dialog.NewCustomWithoutButtons("IDM Site Grabber", content, a.win)
+	dlg := dialog.NewCustomWithoutButtons("ODM Site Grabber", content, a.win)
 	start := func() {
 		depth, pages, files := 1, 50, 100
 		fmt.Sscanf(depthEntry.Text, "%d", &depth)

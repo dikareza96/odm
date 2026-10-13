@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"odm/internal/engine"
 	"odm/internal/server"
 	"odm/internal/ui"
+	"odm/internal/version"
 )
 
 func main() {
@@ -31,7 +33,13 @@ func main() {
 	nativeHost := flag.Bool("native-messaging", false, "run as a browser native-messaging host")
 	open := flag.Bool("open", true, "open the UI window on start")
 	noUI := flag.Bool("no-ui", false, "never open a UI window")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("%s %s (%s/%s, %s)\n", version.Name, version.Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
+		return
+	}
 
 	if *nativeHost {
 		runNativeHost(*addr)
@@ -82,9 +90,15 @@ func main() {
 		})
 	}
 
-	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler()}
+	listener, err := net.Listen("tcp", *addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ODM is already running (or %s is busy): %v\n", *addr, err)
+		log.Println("bind:", err)
+		return
+	}
+	httpSrv := &http.Server{Handler: srv.Handler()}
 	go func() {
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Println("server:", err)
 		}
 	}()

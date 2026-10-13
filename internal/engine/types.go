@@ -13,9 +13,8 @@ const (
 	StatusError       Status = "error"
 )
 
-// Tuning defaults. The value set mirrors the behaviour observed while
-// reverse engineering the reference product: eight sockets per file, a
-// minimum chunk of ~23 KiB, and a 2 MiB step for query-range fallback.
+// Tuning defaults: eight sockets per file, a minimum chunk of ~23 KiB, and a
+// 2 MiB step for query-range fallback.
 const (
 	DefaultConnections = 8
 	MinChunkSize       = 23363

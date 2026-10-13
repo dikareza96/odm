@@ -1,16 +1,15 @@
 # Ochi Download Manager (ODM)
 
-A segmented, resumable download manager for Windows (with a cross-platform core),
-built in pure Go. The engine design follows what we learned by reverse engineering
-Internet Download Manager: multiple sockets per file, byte-range requests, dynamic
-chunk splitting, per-chunk resume state and a ~23 KiB minimum chunk.
+A segmented, resumable download manager written in pure Go, with a desktop UI
+and a headless HTTP/SSE API. Files are fetched over several connections, resumed
+exactly where they stopped, and organised into category folders and queues.
 
 ## Highlights
 
 - **Segmented transfers** — up to N sockets per file using `Range: bytes=start-end`
-  (default 8, like the reference product).
-- **Dynamic splitting** — an idle connection steals the tail half of the busiest
-  chunk (the reference product's "alternative connection").
+  (default 8).
+- **Dynamic splitting** — an idle connection takes over the tail half of the
+  busiest chunk instead of sitting still.
 - **Resume** — per-chunk progress persisted as JSON plus a `.odmpart` file.
 - **Graceful fallback** — servers without `Accept-Ranges` are fetched on one stream.
 - **Queue, settings, categories** — concurrent-download cap, global speed limit,
@@ -28,14 +27,20 @@ chunk splitting, per-chunk resume state and a ~23 KiB minimum chunk.
 
 ## Build
 
-Requires Go 1.23+. The core engine uses only the standard library. The desktop
-UI uses [Fyne](https://fyne.io), which needs cgo, so a Windows cross-build needs
-mingw-w64 (`CC_WINDOWS`, default `x86_64-w64-mingw32-gcc`):
+Requires Go 1.23+. The engine is standard-library only. The desktop UI uses
+[Fyne](https://fyne.io) behind the `fyne` build tag and therefore needs cgo.
+
+| Target | Command | Extra requirements |
+| ------ | ------- | ------------------ |
+| Windows | `./scripts/build.sh windows` | mingw-w64 (`CC_WINDOWS`, default `x86_64-w64-mingw32-gcc`) |
+| Linux | `./scripts/build.sh linux` | `libgl1-mesa-dev xorg-dev libxkbcommon-dev` |
+| macOS | `./scripts/build.sh darwin` | Xcode command line tools |
+| Headless | `./scripts/build.sh cli` | none |
 
 ```bash
-sudo apt install gcc-mingw-w64-x86-64      # mingw toolchain for cross-building
-./scripts/build.sh windows                 # -> dist/ODM.exe
-go build -o odm ./cmd/odm                  # local build (no UI on non-Windows)
+go test ./...                              # engine tests, no UI needed
+go build -tags fyne -o odm ./cmd/odm        # desktop build for the current OS
+sudo apt install gcc-mingw-w64-x86-64      # for a Windows cross-build from Linux
 ```
 
 ## Run
@@ -101,29 +106,36 @@ same engine backs the planned Linux/macOS builds.
 4. **Split** — a free worker halves the largest remaining chunk and takes the tail.
 5. **Finish** — the `.odmpart` file is renamed onto the final name.
 
-Resume state records `{id,start,end,done}` per chunk, mirroring the per-chunk
-records the reference product keeps in the registry.
+Resume state records `{id,start,end,done}` per chunk as JSON, so a restart
+continues from the exact byte offset.
 
-## Design notes from the reverse engineering
+## Design notes
 
-| Observed in IDM | ODM |
-| --------------- | --- |
-| default 8 connections, `MaxConnectionsNumber` registry value | `-conns` / settings |
-| min chunk 23363 B, 2 MiB query-range step | `MinChunkSize`, `DefaultChunkStep` |
-| `Range: bytes=` builder | `Download.fetch` |
-| chunk reassigned between connections | `Split` + worker steal |
-| per-chunk state for resume | `State` / `Store` |
-| category folders by file type | `Category` + settings |
-| `&bytes=` fallback for non-range servers | single-stream fallback (query-range planned) |
-| MP4/MKV/FLV muxer in `idmvconv.dll` | planned: hand off to ffmpeg |
+- **Connections** — 8 per file by default, configurable per download or in settings.
+- **Chunking** — `[0,total)` is split into chunks no smaller than `MinChunkSize`
+  (23363 B); a tiny tail is folded into the previous chunk.
+- **Dynamic splitting** — a free worker halves the largest remaining chunk.
+- **Resume** — per-chunk state is persisted, so restarts continue precisely.
+- **Fallback** — servers without `Accept-Ranges` are fetched on a single stream.
+
+These are well-known techniques used by download managers generally, implemented
+here from scratch.
 
 ## Roadmap
 
-- Query-range (`?start=..&end=..`) fallback for servers without `Accept-Ranges`.
-- HLS/DASH grabber (sniff + segment download) with ffmpeg finalise.
-- System tray, per-download speed limits, scheduler, site grabber.
+- Scheduler (start/stop times, days, shut down or exit when done) and sequential
+  queue processing with item reordering.
+- File types list, per-category default folders, per-download properties dialog.
+- 401 challenge handling (Basic + Digest) with a credentials prompt.
+- Zip preview, sounds, virus-scan hook, grabber projects, localisation.
+- HLS/DASH grabber with ffmpeg finalise.
 
-## License note
+## License
 
-ODM is an independent reimplementation of publicly observable download-manager
-behaviour. It contains no code or data from any commercial product.
+[MIT](LICENSE) © 2026 Ochi Download Manager contributors.
+
+ODM is an independent, from-scratch implementation. It ships no code, binaries,
+assets or data from any other product and does not bypass copy protection or
+activation. Copyright protects expression, not ideas: this project claims rights
+only over its own source and asserts none over any idea, algorithm or behaviour.
+See [DISCLAIMER.md](DISCLAIMER.md) for the full statement.
