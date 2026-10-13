@@ -1,0 +1,94 @@
+package extpack
+
+import (
+	"archive/zip"
+	"encoding/json"
+	"path/filepath"
+	"sort"
+	"testing"
+)
+
+func TestManifestVersion(t *testing.T) {
+	cases := map[string]string{"v0.2.0": "0.2.0", "0.2.0-rc1": "0.2.0", "v1.2.3.4": "1.2.3.4", "v2": "2"}
+	for in, want := range cases {
+		if got, err := ManifestVersion(in); err != nil || got != want {
+			t.Errorf("ManifestVersion(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "latest", "v1.x", "1.2.3.4.5"} {
+		if _, err := ManifestVersion(bad); err == nil {
+			t.Errorf("ManifestVersion(%q) accepted", bad)
+		}
+	}
+}
+
+func readZip(t *testing.T, path string) (map[string]any, []string) {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	var names []string
+	var man map[string]any
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+		if f.Name == "manifest.json" {
+			r, _ := f.Open()
+			if err := json.NewDecoder(r).Decode(&man); err != nil {
+				t.Fatal(err)
+			}
+			r.Close()
+		}
+	}
+	sort.Strings(names)
+	return man, names
+}
+
+// Builds from the real extension/ folder, so a manifest change that breaks
+// either browser fails here rather than in the release workflow.
+func TestBuildFromRepoExtension(t *testing.T) {
+	out := t.TempDir()
+	archives, err := Build(filepath.Join("..", "..", "extension"), out, "0.9.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cm, cfiles := readZip(t, archives[Chromium])
+	if cm["version"] != "0.9.1" || cm["key"] == nil || cm["browser_specific_settings"] != nil {
+		t.Fatalf("chromium manifest: version=%v key?=%v bss=%v", cm["version"], cm["key"] != nil, cm["browser_specific_settings"])
+	}
+	if bg := cm["background"].(map[string]any); bg["service_worker"] != "background.js" || bg["scripts"] != nil {
+		t.Fatalf("chromium background: %v", bg)
+	}
+
+	fm, ffiles := readZip(t, archives[Firefox])
+	if fm["version"] != "0.9.1" || fm["key"] != nil {
+		t.Fatalf("firefox manifest keeps key or wrong version: %v", fm["version"])
+	}
+	bg := fm["background"].(map[string]any)
+	if bg["service_worker"] != nil || len(bg["scripts"].([]any)) != 1 {
+		t.Fatalf("firefox background: %v", bg)
+	}
+	gecko := fm["browser_specific_settings"].(map[string]any)["gecko"].(map[string]any)
+	if gecko["id"] != "odm@troke.id" {
+		t.Fatalf("gecko id %v", gecko["id"])
+	}
+
+	for _, files := range [][]string{cfiles, ffiles} {
+		has := map[string]bool{}
+		for _, f := range files {
+			has[f] = true
+		}
+		for _, want := range []string{"manifest.json", "background.js", "popup.html", "popup.js"} {
+			if !has[want] {
+				t.Fatalf("archive misses %s: %v", want, files)
+			}
+		}
+		for _, f := range files {
+			if f == "README.md" || filepath.Dir(f) == "native" {
+				t.Fatalf("archive ships %s, which is not part of the extension", f)
+			}
+		}
+	}
+}

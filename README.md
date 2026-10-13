@@ -131,9 +131,10 @@ shows the window.
 ## Browser integration
 
 1. In ODM, open *Options → General → Register*, or run `ODM.exe -register-browser`.
-2. Load the `extension/` folder from this repository as an unpacked extension.
-   Its ID is pinned to `fnondfibgeiffjplpokfgiacjelmbcbk` in Chrome and Edge,
-   and to `odm@ochi.local` in Firefox.
+2. Install the extension from the release:
+   - Chrome, Edge, Brave, Opera: unzip `odm-extension-chromium.zip`, then
+     *Developer mode* → *Load unpacked* in `chrome://extensions`.
+   - Firefox: open `odm-extension-firefox.xpi` (signed by Mozilla).
 3. Restart the browser once.
 
 [extension/README.md](extension/README.md) has the details, including where
@@ -202,7 +203,9 @@ internal/autostart  launch at login (Run key, XDG autostart, LaunchAgent)
 internal/update     GitHub Releases version check
 internal/clipmon    clipboard watcher (native on Windows, via Fyne elsewhere) and URL detection
 internal/osutil     open, reveal and shutdown helpers
-extension/          MV3 browser extension and native-host manifests
+cmd/extpack         builds the Chromium (.zip) and Firefox (.xpi) extension packages
+internal/extpack    per-browser manifest derivation and packaging
+extension/          MV3 browser extension source and native-host manifests
 ```
 
 ## Roadmap

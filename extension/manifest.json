@@ -23,7 +23,12 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "odm@ochi.local"
+      "id": "odm@troke.id",
+      "data_collection_permissions": {
+        "required": [
+          "browsingActivity"
+        ]
+      }
     }
   }
 }

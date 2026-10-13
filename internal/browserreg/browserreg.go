@@ -22,8 +22,14 @@ const HostName = "com.ochi.odm"
 // wildcards, so the unpacked extension must keep this ID.
 const ChromeExtensionID = "fnondfibgeiffjplpokfgiacjelmbcbk"
 
+// ChromiumExtensionIDs are every ID the Chromium-family extension can have:
+// the pinned unpacked ID, plus each store's ID once it is published there
+// (stores assign their own). The host manifest allows all of them, as a
+// browser reads only the first registered host manifest it finds.
+var ChromiumExtensionIDs = []string{ChromeExtensionID}
+
 // FirefoxExtensionID is browser_specific_settings.gecko.id in the manifest.
-const FirefoxExtensionID = "odm@ochi.local"
+const FirefoxExtensionID = "odm@troke.id"
 
 // Result describes one browser registration.
 type Result struct {
@@ -62,7 +68,9 @@ func writeManifests(dir, exe string) (chromium, firefox string, err error) {
 	}
 	base := manifest{Name: HostName, Description: "Ochi Download Manager", Path: exe, Type: "stdio"}
 	c := base
-	c.AllowedOrigins = []string{"chrome-extension://" + ChromeExtensionID + "/"}
+	for _, id := range ChromiumExtensionIDs {
+		c.AllowedOrigins = append(c.AllowedOrigins, "chrome-extension://"+id+"/")
+	}
 	f := base
 	f.AllowedExtensions = []string{FirefoxExtensionID}
 	chromium = filepath.Join(dir, HostName+".json")

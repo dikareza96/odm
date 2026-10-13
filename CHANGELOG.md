@@ -6,6 +6,26 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Releases include the browser extension: `odm-extension-chromium.zip` for
+  Chrome, Edge, Brave and Opera (load unpacked) and a Mozilla-signed
+  `odm-extension-firefox.xpi` (unsigned on pre-releases).
+- `cmd/extpack` derives a manifest per browser from `extension/`.
+
+### Changed
+
+- The Firefox add-on ID is now `odm@troke.id`, and the add-on declares the
+  data it hands to ODM (Firefox's data collection permissions).
+- The native host allows a list of Chromium extension IDs, ready for store
+  IDs alongside the pinned unpacked ID.
+
+### Fixed
+
+- The extension did not run in Firefox at all: its manifest only had
+  `background.service_worker`, which Firefox does not support. The Firefox
+  package uses `background.scripts`.
+
 ## [0.1.1] - 2026-10-13
 
 ### Added

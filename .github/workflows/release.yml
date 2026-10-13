@@ -97,3 +97,41 @@ jobs:
           # Tags like v0.1.0-rc1 publish as pre-releases, which the in-app
           # update check (releases/latest) does not offer.
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  extension:
+    name: Browser extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Package
+        run: go run ./cmd/extpack -src extension -out dist/extension -version "${GITHUB_REF_NAME}"
+
+      # AMO accepts each add-on version once, and an rc tag and its final tag
+      # share the same numeric extension version, so only final tags are
+      # signed. Pre-releases ship the unsigned .xpi (Firefox Developer
+      # Edition / Nightly). Without credentials the release still completes.
+      - name: Sign for Firefox (unlisted)
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$AMO_JWT_ISSUER" ] || [ -z "$AMO_JWT_SECRET" ]; then
+            echo "::warning::AMO credentials are not set; shipping the unsigned .xpi"
+            exit 0
+          fi
+          npx --yes web-ext@10.7.0 sign --channel=unlisted \
+            --source-dir dist/extension/firefox --artifacts-dir dist/extension/signed \
+            --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET"
+          mv dist/extension/signed/*.xpi dist/extension/odm-extension-firefox.xpi
+          rm dist/extension/odm-extension-firefox-unsigned.xpi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/extension/odm-extension-*
+          prerelease: ${{ contains(github.ref_name, '-') }}
