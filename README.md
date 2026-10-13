@@ -20,7 +20,9 @@ chunk splitting, per-chunk resume state and a ~23 KiB minimum chunk.
 - **Browser takeover** — an MV3 extension plus a native-messaging host queues
   downloads from Chrome / Edge / Firefox, carrying referrer and cookies.
 - **Clipboard monitor** — on Windows, copying a downloadable URL queues it.
-- **Local web UI** in a WebView2/Edge app window; JSON + SSE API underneath.
+- **Native Windows UI** — a real Win32 window (toolbar, category tree, report
+  table, dialogs) with no browser and no web server. On other platforms and in
+  headless mode the same engine is driven by a JSON + SSE API.
 
 ## Build
 
@@ -66,14 +68,19 @@ See [extension/README.md](extension/README.md) for registering it with a browser
 ## Architecture
 
 ```
-cmd/odm            CLI entry point; UI window, native-messaging relay, headless add
+cmd/odm            CLI entry point; native UI, native-messaging relay, headless add
 internal/engine    probe, chunk planner, segmented transfer, manager, settings, JSON store
-internal/server    HTTP API + SSE + embedded web UI (internal/server/web)
+internal/ui        native Win32 interface (github.com/lxn/walk), Windows-only
+internal/server    JSON + SSE API and the embedded web UI (non-Windows / headless)
 internal/native    Chrome/Firefox native-messaging framing
 internal/clipmon   Windows clipboard watcher + URL detection
 internal/osutil    open / reveal helpers
 extension/         MV3 browser extension + native-host manifests
 ```
+
+The Windows build is a GUI subsystem executable (`-H=windowsgui`), so no console
+window appears. The loopback API still runs as an internal control channel so the
+browser native-messaging relay can queue downloads; it is not used to draw the UI.
 
 `internal/engine` uses only the standard library and has no OS bindings, so the
 same engine backs the planned Linux/macOS builds.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"odm/internal/clipmon"
 	"odm/internal/engine"
 	"odm/internal/server"
+	"odm/internal/ui"
 )
 
 func main() {
@@ -37,6 +39,10 @@ func main() {
 	}
 
 	baseDir := configBaseDir()
+	if f, err := os.OpenFile(filepath.Join(baseDir, "odm.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		log.SetOutput(f)
+		defer f.Close()
+	}
 	settingsPath := filepath.Join(baseDir, "settings.json")
 	fallback := defaultDownloadDir()
 	settings := engine.LoadSettings(settingsPath, fallback)
@@ -52,7 +58,7 @@ func main() {
 
 	store, err := engine.NewStore(filepath.Join(baseDir, "state"))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "odm: cannot create state dir:", err)
+		log.Println("cannot create state dir:", err)
 		os.Exit(1)
 	}
 
@@ -79,7 +85,7 @@ func main() {
 	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler()}
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintln(os.Stderr, "odm: server:", err)
+			log.Println("server:", err)
 		}
 	}()
 
@@ -95,6 +101,17 @@ func main() {
 
 	fmt.Printf("Ochi Download Manager listening on %s\n", url)
 	fmt.Printf("state: %s\ndownloads: %s\n", baseDir, settings.Dir)
+
+	// On Windows the UI is a native Win32 window (no browser). The loopback API
+	// stays up as an internal control channel for the browser relay.
+	if runtime.GOOS == "windows" && *open && !*noUI {
+		if err := ui.Run(mgr); err != nil {
+			log.Println("ui:", err)
+		}
+		shutdown(httpSrv)
+		return
+	}
+
 	if *open && !*noUI {
 		openUI(url)
 	}

@@ -7,9 +7,11 @@ OUT="${OUT:-dist}"
 mkdir -p "$OUT"
 
 build() {
-  local goos="$1" goarch="$2" name="$3"
+  local goos="$1" goarch="$2" name="$3" ldflags="-s -w"
+  # Windows builds are GUI apps: no console window is shown.
+  [ "$goos" = "windows" ] && ldflags="-s -w -H=windowsgui"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -trimpath -ldflags "-s -w" -o "$OUT/$name" ./cmd/odm
+    go build -trimpath -ldflags "$ldflags" -o "$OUT/$name" ./cmd/odm
   echo "built $OUT/$name"
 }
 
