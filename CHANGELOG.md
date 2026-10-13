@@ -6,6 +6,8 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-13
+
 ### Added
 
 - Refresh download address: point an unfinished download at a new URL when
@@ -80,5 +82,6 @@ All notable changes to ODM are documented here. The format is based on
   instance); no TCP port is opened unless `-serve` is given, and that
   listener requires a per-run token and rejects foreign origins.
 
-[Unreleased]: https://github.com/troke12/odm/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/troke12/odm/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/troke12/odm/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/troke12/odm/releases/tag/v0.1.0
