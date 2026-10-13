@@ -5,6 +5,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -232,22 +234,79 @@ func (a *application) openOptionsTab(tab int) {
 	clipCheck.SetChecked(settings.Clipboard)
 	updCheck := widget.NewCheck("Check for updates at start-up", nil)
 	updCheck.SetChecked(!settings.NoUpdateCheck)
-	// Shows which browsers launch this ODM, which launch another copy, and
-	// which have no registration; refreshed after Register/Unregister. The
-	// result dialogs show on this Options window (on the main window they
-	// were hidden behind it).
+	// Browser integration status: an icon and coloured line (all set /
+	// partly set / not registered), a hint for the next step, and a brief
+	// highlight whenever Register or Unregister changes it, so the click
+	// visibly did something. Dialogs appear only for failures, on this
+	// Options window.
+	var regBtn, unregBtn *widget.Button
+	statusIcon := widget.NewIcon(theme.QuestionIcon())
 	browserStatus := widget.NewLabel("")
 	browserStatus.Wrapping = fyne.TextWrapWord
-	refreshBrowser := func() {
-		exe, _ := selfExe()
-		browserStatus.SetText(browserreg.Summary(browserreg.Check(), exe))
+	browserHint := widget.NewLabel("")
+	browserHint.Wrapping = fyne.TextWrapWord
+	browserHint.Importance = widget.LowImportance
+	statusBg := canvas.NewRectangle(color.Transparent)
+	statusBg.CornerRadius = 6
+	statusRow := container.NewStack(statusBg, container.NewPadded(
+		container.NewBorder(nil, nil, container.NewCenter(statusIcon), nil, browserStatus)))
+	flash := func() {
+		accent := theme.PrimaryColor()
+		r, g, b, _ := accent.RGBA()
+		start := color.NRGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: 0x70}
+		canvas.NewColorRGBAAnimation(start, color.Transparent, 900*time.Millisecond, func(c color.Color) {
+			statusBg.FillColor = c
+			statusBg.Refresh()
+		}).Start()
 	}
-	refreshBrowser()
-	regBtn := widget.NewButtonWithIcon("Register", theme.LoginIcon(), func() {
+	refreshBrowser := func(highlight bool) {
+		exe, _ := selfExe()
+		sts := browserreg.Check()
+		here, other, missing := 0, 0, 0
+		for _, st := range sts {
+			switch {
+			case st.Points(exe):
+				here++
+			case st.Registered:
+				other++
+			case st.Installed:
+				missing++
+			}
+		}
+		browserStatus.SetText(browserreg.Summary(sts, exe))
+		switch {
+		case here > 0 && other == 0 && missing == 0:
+			statusIcon.SetResource(theme.NewSuccessThemedResource(theme.ConfirmIcon()))
+			browserStatus.Importance = widget.SuccessImportance
+			browserHint.SetText("Install the ODM extension in each browser (see the README), then restart the browser once.")
+			regBtn.SetText("Register again")
+		case here == 0 && other == 0:
+			statusIcon.SetResource(theme.NewErrorThemedResource(theme.CancelIcon()))
+			browserStatus.Importance = widget.DangerImportance
+			browserHint.SetText("Register so browsers can hand downloads to ODM.")
+			regBtn.SetText("Register")
+		default:
+			statusIcon.SetResource(theme.NewWarningThemedResource(theme.WarningIcon()))
+			browserStatus.Importance = widget.WarningImportance
+			browserHint.SetText("Register to point every browser at this ODM.")
+			regBtn.SetText("Register")
+		}
+		browserStatus.Refresh()
+		if here+other > 0 {
+			unregBtn.Enable()
+		} else {
+			unregBtn.Disable()
+		}
+		if highlight {
+			flash()
+		}
+	}
+	regBtn = widget.NewButtonWithIcon("Register", theme.LoginIcon(), func() {
 		a.registerBrowser(w)
-		refreshBrowser()
+		refreshBrowser(true)
 	})
-	unregBtn := widget.NewButtonWithIcon("Unregister", theme.DeleteIcon(), func() {
+	regBtn.Importance = widget.HighImportance
+	unregBtn = widget.NewButtonWithIcon("Unregister", theme.DeleteIcon(), func() {
 		dialog.ShowConfirm("Unregister browser integration",
 			"Browsers will stop handing downloads to ODM until you register again. Continue?", func(yes bool) {
 				if !yes {
@@ -259,12 +318,13 @@ func (a *application) openOptionsTab(tab int) {
 						failed = append(failed, r.String())
 					}
 				}
-				refreshBrowser()
+				refreshBrowser(true)
 				if len(failed) > 0 {
 					dialog.ShowError(fmt.Errorf("could not unregister:\n%s", strings.Join(failed, "\n")), w)
 				}
 			}, w)
 	})
+	refreshBrowser(false)
 	startupCheck := widget.NewCheck("Launch ODM on startup (in the system tray)", nil)
 	startupWas := autostart.Enabled()
 	startupCheck.SetChecked(startupWas)
@@ -273,7 +333,8 @@ func (a *application) openOptionsTab(tab int) {
 	generalTab := container.NewVBox(
 		header("Browser / system integration"),
 		widget.NewLabelWithStyle("Browser extension (Chrome, Edge, Chromium, Firefox)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		browserStatus,
+		statusRow,
+		browserHint,
 		container.NewHBox(regBtn, unregBtn),
 		widget.NewSeparator(),
 		startupCheck,
@@ -825,35 +886,17 @@ func (a *application) registerBrowser(parent fyne.Window) {
 		dialog.ShowError(fmt.Errorf("cannot locate the ODM executable: %w", err), parent)
 		return
 	}
-	var ok, skipped, failed []string
+	var failed []string
 	for _, r := range browserreg.Register(exe, a.mgr.ConfigDir()) {
-		switch {
-		case r.Err != nil:
+		if r.Err != nil {
 			failed = append(failed, r.String())
-		case r.Skipped:
-			skipped = append(skipped, r.Browser)
-		default:
-			ok = append(ok, r.Browser)
 		}
 	}
-	// A summary people can act on; the registry or folder detail only
-	// matters when something failed.
-	var b strings.Builder
-	if len(ok) > 0 {
-		fmt.Fprintf(&b, "ODM is registered for %s.\n", strings.Join(ok, ", "))
-	}
-	if len(skipped) > 0 {
-		fmt.Fprintf(&b, "Not installed, skipped: %s.\n", strings.Join(skipped, ", "))
-	}
+	// Success shows in the status line on the Options window; a dialog is
+	// worth it only when a browser could not be registered.
 	if len(failed) > 0 {
-		fmt.Fprintf(&b, "\nCould not register:\n%s\n", strings.Join(failed, "\n"))
+		dialog.ShowError(fmt.Errorf("could not register:\n%s", strings.Join(failed, "\n")), parent)
 	}
-	b.WriteString("\nNext: install the ODM extension in the browser, then restart the browser once.")
-	title := "Browser integration"
-	if len(failed) > 0 {
-		title = "Browser integration: some browsers failed"
-	}
-	dialog.ShowInformation(title, b.String(), parent)
 }
 
 /* ---------- update check ---------- */
