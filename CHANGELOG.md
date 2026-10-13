@@ -11,7 +11,9 @@ All notable changes to ODM are documented here. The format is based on
 - "Download this video" button over video players: the extension notes video
   and audio files the page loads (512 KB and up, Google video byte-range
   requests turned back into the whole file) and hands the chosen one to ODM
-  named after the page title. HLS/DASH streams are listed as unsupported.
+  named after the page title (site name after the last " | " dropped,
+  spaces as underscores: `Episode_11.mp4`). HLS/DASH streams are listed as
+  unsupported.
 - Downloads handed over by the browser open a New Download window (its own
   window, so it works while ODM is in the tray) prefilled with the name,
   cookies, referrer and user agent, which are also used for the size probe.

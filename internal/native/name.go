@@ -26,11 +26,11 @@ var mediaExt = map[string]string{
 const maxTitleName = 120
 
 // SuggestName picks a file name for a download handed over by the browser.
-// The browser's own file name wins. Media gets the page title plus the
+// The browser's own file name wins, unchanged apart from characters Windows
+// forbids. Media gets a name from the page title (see titleName) plus the
 // extension of its type, since stream URLs end in names like
 // "videoplayback"; other files leave the name to ODM's probe, because a page
-// title rarely describes a linked archive or installer. Path separators and
-// characters Windows forbids are replaced.
+// title rarely describes a linked archive or installer.
 func SuggestName(filename, title, mime string) string {
 	if base := baseName(filename); base != "" {
 		return clean(base)
@@ -41,12 +41,41 @@ func SuggestName(filename, title, mime string) string {
 	if !ok || title == "" {
 		return ""
 	}
-	name := clean(title)
+	name := titleName(title)
+	if name == "" {
+		return ""
+	}
+	return name + ext
+}
+
+// titleName turns a page title into a file name:
+//   - the site name after the last " | " is dropped ("Episode 11 | Otaku
+//     Desu" -> "Episode 11"); other separators such as " - " are kept, as
+//     they are often part of the title itself;
+//   - forbidden characters and spaces become "_", runs of "_" collapse, and
+//     "_" or "." are trimmed from the ends;
+//   - the result is capped at maxTitleName characters.
+func titleName(title string) string {
+	if i := strings.LastIndex(title, " | "); i > 0 {
+		if head := strings.TrimSpace(title[:i]); head != "" {
+			title = head
+		}
+	}
+	name := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' {
+			return '_'
+		}
+		return r
+	}, clean(title))
+	for strings.Contains(name, "__") {
+		name = strings.ReplaceAll(name, "__", "_")
+	}
+	name = strings.Trim(name, "_.")
 	for utf8.RuneCountInString(name) > maxTitleName {
 		_, size := utf8.DecodeLastRuneInString(name)
 		name = name[:len(name)-size]
 	}
-	return strings.TrimRight(name, " .") + ext
+	return strings.TrimRight(name, "_.")
 }
 
 func baseName(p string) string {
