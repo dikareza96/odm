@@ -1,12 +1,14 @@
 //go:build windows
 
-// Package ui implements the ODM desktop interface with Fyne: a themed window
-// with an icon toolbar, a category sidebar and a report table, driving the
-// engine in-process (no web server, no embedded browser).
+// Package ui implements the ODM desktop interface with Fyne: an icon toolbar,
+// a category tree, a sortable report table and dialogs, driving the engine
+// in-process (no web server, no embedded browser).
 package ui
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +27,7 @@ func Run(mgr *engine.Manager) error {
 		mgr:             mgr,
 		progressWindows: map[string]*progressView{},
 		selectedRow:     -1,
+		sortCol:         -1,
 	}
 	a.fyneApp = app.NewWithID("com.ochi.odm")
 	a.fyneApp.Settings().SetTheme(newTheme())
@@ -39,25 +42,25 @@ func Run(mgr *engine.Manager) error {
 	return nil
 }
 
-type catEntry struct {
-	text  string
-	kind  string
-	value string
-}
-
 type application struct {
 	mgr     *engine.Manager
 	fyneApp fyne.App
 	win     fyne.Window
 
 	table  *downloadTable
-	cats   *widget.List
+	tree   *widget.Tree
+	split  *container.Split
 	status *widget.Label
 
 	mu          sync.Mutex
 	items       []engine.Info
-	catEntries  []catEntry
 	selectedRow int
+	sortCol     int
+	sortAsc     bool
+	counts      map[string]int
+	total       int
+	unfinished  int
+	finished    int
 	filter      struct {
 		kind  string
 		value string
@@ -82,37 +85,41 @@ func (t *downloadTable) TappedSecondary(e *fyne.PointEvent) {
 	t.app.showRowMenu(e.AbsolutePosition)
 }
 
-var columnTitles = []string{"File Name", "Size", "Progress", "Status", "Time left", "Transfer rate", "Path"}
+// headerButton is a clickable column header that toggles sorting.
+type headerButton struct {
+	*widget.Button
+	app *application
+	col int
+}
+
+var columnTitles = []string{"File Name", "Size", "Status", "Time left", "Transfer rate", "Last Try…", "Description"}
 
 const (
 	colName = iota
 	colSize
-	colProgress
 	colStatus
 	colETA
 	colRate
-	colPath
+	colLastTry
+	colDescription
 )
 
 func (a *application) build() {
 	top := container.NewVBox(
 		container.NewPadded(container.NewHBox(
-			iconButton("Add URL", theme.ContentAddIcon(), a.openAddDialog),
-			widget.NewSeparator(),
-			iconButton("Resume", theme.MediaPlayIcon(), a.resumeSelected),
-			iconButton("Stop", theme.MediaPauseIcon(), a.stopSelected),
-			iconButton("Stop All", theme.MediaStopIcon(), func() { a.mgr.PauseAll(); a.refresh() }),
-			widget.NewSeparator(),
-			iconButton("Delete", theme.ContentRemoveIcon(), a.deleteSelected),
-			iconButton("Del Completed", theme.ConfirmIcon(), func() { a.mgr.ClearCompleted(); a.refresh() }),
-			iconButton("Options", theme.SettingsIcon(), a.openOptionsDialog),
-			widget.NewSeparator(),
-			iconButton("Progress", theme.InfoIcon(), func() {
+			newToolButton(theme.ContentAddIcon(), "Add URL", a.openAddDialog),
+			newToolButton(theme.MediaPlayIcon(), "Resume", a.resumeSelected),
+			newToolButton(theme.MediaPauseIcon(), "Stop", a.stopSelected),
+			newToolButton(theme.MediaStopIcon(), "Stop All", func() { a.mgr.PauseAll(); a.refresh() }),
+			newToolButton(theme.ContentRemoveIcon(), "Delete", a.deleteSelected),
+			newToolButton(theme.ConfirmIcon(), "Del Completed", func() { a.mgr.ClearCompleted(); a.refresh() }),
+			newToolButton(theme.SettingsIcon(), "Options", a.openOptionsDialog),
+			newToolButton(theme.InfoIcon(), "Progress", func() {
 				if d, ok := a.current(); ok {
 					a.openProgressWindow(d.ID)
 				}
 			}),
-			iconButton("Open folder", theme.FolderOpenIcon(), func() {
+			newToolButton(theme.FolderOpenIcon(), "Open folder", func() {
 				if d, ok := a.current(); ok {
 					revealPath(d.FilePath)
 				}
@@ -128,7 +135,7 @@ func (a *application) build() {
 			return len(a.items), len(columnTitles)
 		},
 		func() fyne.CanvasObject {
-			return container.NewMax(widget.NewLabel(""), widget.NewProgressBar())
+			return container.NewVBox(widget.NewLabel(""), widget.NewProgressBar())
 		},
 		a.updateCell,
 	)
@@ -139,85 +146,95 @@ func (a *application) build() {
 		}
 	}
 	base.CreateHeader = func() fyne.CanvasObject {
-		l := widget.NewLabel("")
-		l.TextStyle = fyne.TextStyle{Bold: true}
-		return l
+		b := widget.NewButton("", nil)
+		b.Importance = widget.LowImportance
+		return &headerButton{Button: b}
 	}
 	base.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
-		if id.Col >= 0 && id.Col < len(columnTitles) {
-			o.(*widget.Label).SetText(columnTitles[id.Col])
-		}
+		hb := o.(*headerButton)
+		hb.app = a
+		hb.col = id.Col
+		hb.SetText(a.headerText(id.Col))
+		hb.OnTapped = func() { a.sortBy(hb.col) }
 	}
-	for i, w := range []float32{260, 90, 150, 100, 100, 120, 240} {
+	for i, w := range []float32{250, 90, 130, 100, 120, 140, 260} {
 		base.SetColumnWidth(i, w)
 	}
 	a.table = &downloadTable{Table: base, app: a}
 
-	a.cats = widget.NewList(
-		func() int {
-			a.mu.Lock()
-			defer a.mu.Unlock()
-			return len(a.catEntries)
-		},
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(id widget.ListItemID, o fyne.CanvasObject) {
-			a.mu.Lock()
-			defer a.mu.Unlock()
-			if id >= 0 && id < len(a.catEntries) {
-				o.(*widget.Label).SetText(a.catEntries[id].text)
+	a.tree = widget.NewTree(
+		a.treeChildren,
+		a.treeIsBranch,
+		func(branch bool) fyne.CanvasObject {
+			icon := widget.NewIcon(theme.FolderIcon())
+			if !branch {
+				icon.Hide()
 			}
+			return container.NewHBox(icon, widget.NewLabel(""))
+		},
+		func(uid widget.TreeNodeID, branch bool, o fyne.CanvasObject) {
+			box := o.(*fyne.Container)
+			icon := box.Objects[0].(*widget.Icon)
+			lbl := box.Objects[1].(*widget.Label)
+			if branch {
+				icon.Show()
+			} else {
+				icon.Hide()
+			}
+			lbl.SetText(a.treeLabel(uid))
 		},
 	)
-	a.cats.OnSelected = func(id widget.ListItemID) {
-		a.mu.Lock()
-		if id >= 0 && id < len(a.catEntries) {
-			a.filter.kind = a.catEntries[id].kind
-			a.filter.value = a.catEntries[id].value
-		}
-		a.mu.Unlock()
-		a.refresh()
+	a.tree.OnSelected = func(uid widget.TreeNodeID) {
+		a.selectCategory(string(uid))
 	}
+	a.tree.OpenAllBranches()
+
+	hideBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() { a.toggleSidebar() })
+	hideBtn.Importance = widget.LowImportance
+	catHeader := container.NewBorder(nil, nil,
+		container.NewPadded(widget.NewLabelWithStyle("Categories", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})),
+		hideBtn,
+	)
+	sidebar := container.NewBorder(catHeader, nil, nil, nil, a.tree)
+
+	a.split = container.NewHSplit(sidebar, a.table)
+	a.split.Offset = 0.22
 
 	a.status = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{})
+	a.win.SetContent(container.NewBorder(top, container.NewPadded(a.status), nil, nil, a.split))
+}
 
-	catHeader := widget.NewLabelWithStyle("Categories", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	sidebar := container.NewBorder(container.NewPadded(catHeader), nil, nil, nil, a.cats)
-	split := container.NewHSplit(sidebar, a.table)
-	split.Offset = 0.22
-
-	footer := container.NewPadded(a.status)
-	a.win.SetContent(container.NewBorder(top, footer, nil, nil, split))
+func (a *application) toggleSidebar() {
+	if a.split.Offset > 0.001 {
+		a.split.Offset = 0
+	} else {
+		a.split.Offset = 0.22
+	}
+	a.split.Refresh()
 }
 
 func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	box := o.(*fyne.Container)
 	lbl := box.Objects[0].(*widget.Label)
 	bar := box.Objects[1].(*widget.ProgressBar)
-	bar.TextFormatter = func() string { return fmt.Sprintf("%.0f%%", bar.Value*100) }
 
 	a.mu.Lock()
 	if id.Row < 0 || id.Row >= len(a.items) {
 		a.mu.Unlock()
 		lbl.SetText("")
-		lbl.Show()
 		bar.Hide()
 		return
 	}
 	d := a.items[id.Row]
 	a.mu.Unlock()
 
-	if id.Col == colProgress {
-		lbl.Hide()
+	if id.Col == colName && d.Total > 0 {
 		bar.Show()
-		val := 0.0
-		if d.Total > 0 {
-			val = d.Progress / 100
-		}
-		bar.SetValue(val)
-		return
+		bar.SetValue(d.Progress / 100)
+	} else {
+		bar.Hide()
 	}
-	bar.Hide()
-	lbl.Show()
+
 	switch id.Col {
 	case colName:
 		lbl.SetText(d.FileName)
@@ -226,6 +243,8 @@ func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	case colStatus:
 		if d.Error != "" {
 			lbl.SetText(d.Error)
+		} else if d.Total > 0 && d.Status == engine.StatusDownloading {
+			lbl.SetText(fmt.Sprintf("%s %.0f%%", d.Status, d.Progress))
 		} else {
 			lbl.SetText(string(d.Status))
 		}
@@ -233,10 +252,101 @@ func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		lbl.SetText(etaText(d))
 	case colRate:
 		lbl.SetText(rateText(d))
-	case colPath:
-		lbl.SetText(d.Dir)
+	case colLastTry:
+		if d.Error != "" {
+			lbl.SetText(d.Error)
+		} else {
+			lbl.SetText(d.UpdatedAt.Format("15:04:05"))
+		}
+	case colDescription:
+		lbl.SetText(d.URL)
 	}
 }
+
+func (a *application) headerText(col int) string {
+	if col < 0 || col >= len(columnTitles) {
+		return ""
+	}
+	a.mu.Lock()
+	sc, asc := a.sortCol, a.sortAsc
+	a.mu.Unlock()
+	if sc == col {
+		if asc {
+			return columnTitles[col] + " ▲"
+		}
+		return columnTitles[col] + " ▼"
+	}
+	return columnTitles[col]
+}
+
+func (a *application) sortBy(col int) {
+	a.mu.Lock()
+	if a.sortCol == col {
+		a.sortAsc = !a.sortAsc
+	} else {
+		a.sortCol = col
+		a.sortAsc = true
+	}
+	a.mu.Unlock()
+	a.refresh()
+}
+
+/* ---------- category tree ---------- */
+
+func (a *application) treeChildren(uid widget.TreeNodeID) []widget.TreeNodeID {
+	switch {
+	case uid == "":
+		return []widget.TreeNodeID{"all", "unfinished", "finished"}
+	case uid == "all":
+		out := make([]widget.TreeNodeID, 0, len(engine.Categories()))
+		for _, c := range engine.Categories() {
+			out = append(out, widget.TreeNodeID("cat:"+c))
+		}
+		return out
+	}
+	return nil
+}
+
+func (a *application) treeIsBranch(uid widget.TreeNodeID) bool {
+	return uid == "all" || strings.HasPrefix(string(uid), "cat:")
+}
+
+func (a *application) treeLabel(uid widget.TreeNodeID) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := string(uid)
+	switch {
+	case s == "all":
+		return fmt.Sprintf("All Downloads (%d)", a.total)
+	case strings.HasPrefix(s, "cat:"):
+		name := strings.TrimPrefix(s, "cat:")
+		return fmt.Sprintf("%s (%d)", name, a.counts[name])
+	case s == "unfinished":
+		return fmt.Sprintf("Unfinished (%d)", a.unfinished)
+	case s == "finished":
+		return fmt.Sprintf("Finished (%d)", a.finished)
+	}
+	return s
+}
+
+func (a *application) selectCategory(uid string) {
+	a.mu.Lock()
+	switch {
+	case strings.HasPrefix(uid, "cat:"):
+		a.filter.kind = "category"
+		a.filter.value = strings.TrimPrefix(uid, "cat:")
+	case uid == "unfinished":
+		a.filter.kind, a.filter.value = "unfinished", ""
+	case uid == "finished":
+		a.filter.kind, a.filter.value = "finished", ""
+	default:
+		a.filter.kind, a.filter.value = "all", ""
+	}
+	a.mu.Unlock()
+	a.refresh()
+}
+
+/* ---------- refresh ---------- */
 
 func (a *application) loop() {
 	ticker := time.NewTicker(time.Second)
@@ -247,24 +357,43 @@ func (a *application) loop() {
 }
 
 func (a *application) refresh() {
+	a.mu.Lock()
+	col, asc := a.sortCol, a.sortAsc
+	kind, value := a.filter.kind, a.filter.value
+	a.mu.Unlock()
+
 	all := a.mgr.List()
 	filtered := make([]engine.Info, 0, len(all))
+	counts := map[string]int{}
+	unfinished, finished := 0, 0
 	for _, d := range all {
-		if a.matches(d) {
+		counts[d.Category]++
+		if d.Status == engine.StatusComplete {
+			finished++
+		} else {
+			unfinished++
+		}
+		if matchesFilter(d, kind, value) {
 			filtered = append(filtered, d)
 		}
+	}
+	if col >= 0 {
+		sortSlice(filtered, col, asc)
 	}
 
 	a.mu.Lock()
 	a.items = filtered
-	a.catEntries = buildCategoryEntries(all)
+	a.counts = counts
+	a.total = len(all)
+	a.unfinished = unfinished
+	a.finished = finished
 	a.mu.Unlock()
 
 	if a.table != nil {
 		a.table.Refresh()
 	}
-	if a.cats != nil {
-		a.cats.Refresh()
+	if a.tree != nil {
+		a.tree.Refresh()
 	}
 
 	active, speed := 0, int64(0)
@@ -290,10 +419,37 @@ func (a *application) refresh() {
 	}
 }
 
-func (a *application) matches(d engine.Info) bool {
-	a.mu.Lock()
-	kind, value := a.filter.kind, a.filter.value
-	a.mu.Unlock()
+func sortSlice(items []engine.Info, col int, asc bool) {
+	less := func(i, j int) bool { return compareInfo(items[i], items[j], col) }
+	sort.SliceStable(items, func(i, j int) bool {
+		if asc {
+			return less(i, j)
+		}
+		return less(j, i)
+	})
+}
+
+func compareInfo(x, y engine.Info, col int) bool {
+	switch col {
+	case colName:
+		return strings.ToLower(x.FileName) < strings.ToLower(y.FileName)
+	case colSize:
+		return x.Total < y.Total
+	case colStatus:
+		return x.Status < y.Status
+	case colETA:
+		return etaSeconds(x) < etaSeconds(y)
+	case colRate:
+		return x.Speed < y.Speed
+	case colLastTry:
+		return x.UpdatedAt.Before(y.UpdatedAt)
+	case colDescription:
+		return strings.ToLower(x.URL) < strings.ToLower(y.URL)
+	}
+	return false
+}
+
+func matchesFilter(d engine.Info, kind, value string) bool {
 	switch kind {
 	case "unfinished":
 		return d.Status != engine.StatusComplete
@@ -305,6 +461,8 @@ func (a *application) matches(d engine.Info) bool {
 		return true
 	}
 }
+
+/* ---------- selection and actions ---------- */
 
 func (a *application) current() (*engine.Info, bool) {
 	a.mu.Lock()
@@ -403,35 +561,7 @@ func (a *application) removeSelected(withFile bool) {
 	})
 }
 
-func iconButton(label string, icon fyne.Resource, fn func()) *widget.Button {
-	b := widget.NewButtonWithIcon(label, icon, fn)
-	b.Importance = widget.MediumImportance
-	return b
-}
-
-func buildCategoryEntries(items []engine.Info) []catEntry {
-	counts := map[string]int{}
-	unfinished, finished := 0, 0
-	for _, d := range items {
-		counts[d.Category]++
-		if d.Status == engine.StatusComplete {
-			finished++
-		} else {
-			unfinished++
-		}
-	}
-	out := []catEntry{{text: fmt.Sprintf("All Downloads (%d)", len(items)), kind: "all"}}
-	out = append(out, catEntry{text: "— Categories —"})
-	for _, name := range engine.Categories() {
-		out = append(out, catEntry{text: fmt.Sprintf("  %s (%d)", name, counts[name]), kind: "category", value: name})
-	}
-	out = append(out, catEntry{text: "— Status —"})
-	out = append(out,
-		catEntry{text: fmt.Sprintf("  Unfinished (%d)", unfinished), kind: "unfinished"},
-		catEntry{text: fmt.Sprintf("  Finished (%d)", finished), kind: "finished"},
-	)
-	return out
-}
+/* ---------- formatting ---------- */
 
 func humanBytes(n int64) string {
 	if n <= 0 {
@@ -457,11 +587,18 @@ func rateText(d engine.Info) string {
 	return humanBytes(d.Speed) + "/s"
 }
 
-func etaText(d engine.Info) string {
+func etaSeconds(d engine.Info) float64 {
 	if d.Status != engine.StatusDownloading || d.Speed <= 0 || d.Total <= 0 {
+		return -1
+	}
+	return float64(d.Total-d.Done) / float64(d.Speed)
+}
+
+func etaText(d engine.Info) string {
+	secs := etaSeconds(d)
+	if secs < 0 {
 		return ""
 	}
-	secs := float64(d.Total-d.Done) / float64(d.Speed)
 	m, s := int(secs)/60, int(secs)%60
 	if m > 0 {
 		return fmt.Sprintf("%dm %ds", m, s)
