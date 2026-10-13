@@ -1,7 +1,7 @@
 //go:build windows
 
 // Package ui implements the ODM desktop interface with Fyne: a menu bar, an
-// icon toolbar, a category/queue tree, a sortable report table and dialogs,
+// icon toolbar, a category/queue sidebar, a sortable report table and dialogs,
 // driving the engine in-process (no web server, no embedded browser).
 package ui
 
@@ -44,18 +44,29 @@ func Run(mgr *engine.Manager) error {
 	return nil
 }
 
+// sidebarEntry is one row of the category/queue sidebar.
+type sidebarEntry struct {
+	text   string
+	kind   string
+	value  string
+	indent int
+	icon   fyne.Resource
+	header bool
+}
+
 type application struct {
 	mgr     *engine.Manager
 	fyneApp fyne.App
 	win     fyne.Window
 
 	table  *downloadTable
-	tree   *widget.Tree
+	cats   *widget.List
 	split  *container.Split
 	status *widget.Label
 
 	mu          sync.Mutex
 	items       []engine.Info
+	entries     []sidebarEntry
 	selectedRow int
 	sortCol     int
 	sortAsc     bool
@@ -64,6 +75,7 @@ type application struct {
 	unfinished  int
 	finished    int
 	queues      []string
+	colWidths   []float32
 	filter      struct {
 		kind  string
 		value string
@@ -72,10 +84,15 @@ type application struct {
 	progressWindows map[string]*progressView
 }
 
-// downloadTable adds a double-click and a right-click menu to the report table.
+// downloadTable keeps the columns filling the available width.
 type downloadTable struct {
 	*widget.Table
 	app *application
+}
+
+func (t *downloadTable) Resize(size fyne.Size) {
+	t.Table.Resize(size)
+	t.app.layoutColumns(size.Width)
 }
 
 func (t *downloadTable) DoubleTapped(*fyne.PointEvent) {
@@ -86,13 +103,6 @@ func (t *downloadTable) DoubleTapped(*fyne.PointEvent) {
 
 func (t *downloadTable) TappedSecondary(e *fyne.PointEvent) {
 	t.app.showRowMenu(e.AbsolutePosition)
-}
-
-// headerButton is a clickable column header that toggles sorting.
-type headerButton struct {
-	*widget.Button
-	app *application
-	col int
 }
 
 var columnTitles = []string{"Q", "File Name", "Size", "Status", "Time left", "Transfer rate", "Last Try…", "Description"}
@@ -106,7 +116,18 @@ const (
 	colRate
 	colLastTry
 	colDescription
+	columnCount
 )
+
+// fixed column widths; the name and description columns share the slack.
+var columnFixed = map[int]float32{
+	colQueue:   44,
+	colSize:    78,
+	colStatus:  112,
+	colETA:     78,
+	colRate:    100,
+	colLastTry: 92,
+}
 
 func (a *application) build() {
 	top := container.NewVBox(
@@ -119,8 +140,8 @@ func (a *application) build() {
 			newToolButton(theme.ConfirmIcon(), "Del Completed", func() { a.mgr.ClearCompleted(); a.refresh() }),
 			newToolButton(theme.SettingsIcon(), "Options", a.openOptionsDialog),
 			widget.NewSeparator(),
-			newToolButton(theme.MediaPlayIcon(), "Start Queue", func() { a.startQueue() }),
-			newToolButton(theme.MediaStopIcon(), "Stop Queue", func() { a.stopQueue() }),
+			newToolButton(theme.MediaPlayIcon(), "Start Queue", a.startQueue),
+			newToolButton(theme.MediaStopIcon(), "Stop Queue", a.stopQueue),
 			widget.NewSeparator(),
 			newToolButton(theme.InfoIcon(), "Progress", func() {
 				if d, ok := a.current(); ok {
@@ -140,7 +161,7 @@ func (a *application) build() {
 		func() (int, int) {
 			a.mu.Lock()
 			defer a.mu.Unlock()
-			return len(a.items), len(columnTitles)
+			return len(a.items), columnCount
 		},
 		func() fyne.CanvasObject {
 			return container.NewVBox(widget.NewLabel(""), newMiniBar())
@@ -153,73 +174,134 @@ func (a *application) build() {
 			a.selectedRow = id.Row
 		}
 	}
-	base.CreateHeader = func() fyne.CanvasObject {
-		b := widget.NewButton("", nil)
-		b.Importance = widget.LowImportance
-		return &headerButton{Button: b}
-	}
+	base.CreateHeader = func() fyne.CanvasObject { return newHeaderLabel(a) }
 	base.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
-		hb := o.(*headerButton)
-		hb.app = a
-		hb.col = id.Col
-		hb.SetText(a.headerText(id.Col))
-		hb.OnTapped = func() { a.sortBy(hb.col) }
-	}
-	for i, w := range []float32{50, 240, 90, 120, 95, 115, 130, 250} {
-		base.SetColumnWidth(i, w)
+		h := o.(*headerLabel)
+		h.col = id.Col
+		h.SetText(a.headerText(id.Col))
 	}
 	a.table = &downloadTable{Table: base, app: a}
+	a.layoutColumns(760)
 
-	a.tree = widget.NewTree(
-		a.treeChildren,
-		a.treeIsBranch,
-		func(branch bool) fyne.CanvasObject {
-			icon := widget.NewIcon(theme.FolderIcon())
-			if !branch {
-				icon.Hide()
-			}
-			return container.NewHBox(icon, widget.NewLabel(""))
+	a.cats = widget.NewList(
+		func() int {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			return len(a.entries)
 		},
-		func(uid widget.TreeNodeID, branch bool, o fyne.CanvasObject) {
-			box := o.(*fyne.Container)
-			icon := box.Objects[0].(*widget.Icon)
-			lbl := box.Objects[1].(*widget.Label)
-			if branch {
-				icon.Show()
-			} else {
-				icon.Hide()
+		func() fyne.CanvasObject {
+			icon := widget.NewIcon(theme.FolderIcon())
+			label := widget.NewLabel("")
+			return container.NewHBox(newIndentSpacer(), icon, label)
+		},
+		func(id widget.ListItemID, o fyne.CanvasObject) {
+			a.mu.Lock()
+			if id < 0 || id >= len(a.entries) {
+				a.mu.Unlock()
+				return
 			}
-			lbl.SetText(a.treeLabel(uid))
+			e := a.entries[id]
+			a.mu.Unlock()
+			box := o.(*fyne.Container)
+			spacer := box.Objects[0].(*indentSpacer)
+			icon := box.Objects[1].(*widget.Icon)
+			label := box.Objects[2].(*widget.Label)
+
+			spacer.set(float32(e.indent * 14))
+			icon.Resource = e.icon
+			icon.Refresh()
+			if e.header {
+				label.TextStyle = fyne.TextStyle{Bold: true}
+			} else {
+				label.TextStyle = fyne.TextStyle{}
+			}
+			label.SetText(e.text)
 		},
 	)
-	a.tree.OnSelected = func(uid widget.TreeNodeID) { a.selectNode(string(uid)) }
-	a.tree.OpenAllBranches()
+	a.cats.OnSelected = func(id widget.ListItemID) {
+		a.mu.Lock()
+		if id < 0 || id >= len(a.entries) {
+			a.mu.Unlock()
+			return
+		}
+		e := a.entries[id]
+		a.mu.Unlock()
+		if e.header {
+			return
+		}
+		a.applyFilter(e.kind, e.value)
+	}
 
 	hideBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), a.toggleSidebar)
 	hideBtn.Importance = widget.LowImportance
-	catHeader := container.NewBorder(nil, nil,
+	sideHeader := container.NewBorder(nil, nil,
 		container.NewPadded(widget.NewLabelWithStyle("Categories", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})),
 		hideBtn,
 	)
-	sidebar := container.NewBorder(catHeader, nil, nil, nil, a.tree)
+	sidebar := container.NewBorder(sideHeader, nil, nil, nil, a.cats)
 
 	a.split = container.NewHSplit(sidebar, a.table)
-	a.split.Offset = 0.22
+	a.split.Offset = 0.21
 
 	a.status = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{})
 	a.win.SetContent(container.NewBorder(top, container.NewPadded(a.status), nil, nil, a.split))
 	a.win.SetMainMenu(a.buildMenu())
 }
 
+// layoutColumns sizes the table columns so they fill the available width.
+func (a *application) layoutColumns(total float32) {
+	if total <= 0 {
+		return
+	}
+	var fixedSum float32
+	for _, w := range columnFixed {
+		fixedSum += w
+	}
+	slack := total - fixedSum
+	nameW, descW := float32(200), float32(150)
+	if slack > 360 {
+		nameW = slack * 0.55
+		descW = slack * 0.45
+	} else if slack > 0 {
+		nameW = slack * 0.6
+		descW = slack * 0.4
+	}
+	widths := make([]float32, columnCount)
+	for col, w := range columnFixed {
+		widths[col] = w
+	}
+	widths[colName] = nameW
+	widths[colDescription] = descW
+
+	a.mu.Lock()
+	if len(a.colWidths) == len(widths) {
+		same := true
+		for i := range widths {
+			if a.colWidths[i] != widths[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			a.mu.Unlock()
+			return
+		}
+	}
+	a.colWidths = widths
+	a.mu.Unlock()
+
+	for i, w := range widths {
+		a.table.SetColumnWidth(i, w)
+	}
+}
+
 /* ---------- menu bar ---------- */
 
 func (a *application) buildMenu() *fyne.MainMenu {
-	sep := &fyne.MenuItem{IsSeparator: true}
-
 	tasks := fyne.NewMenu("Tasks",
 		fyne.NewMenuItem("Add new download…", a.openAddDialog),
 		fyne.NewMenuItem("Grab site…", a.openGrabberDialog),
-		sep,
+		&fyne.MenuItem{IsSeparator: true},
 		fyne.NewMenuItem("Export download list…", a.exportList),
 		fyne.NewMenuItem("Import download list…", a.importList),
 		&fyne.MenuItem{IsSeparator: true},
@@ -304,75 +386,48 @@ func (a *application) toggleSidebar() {
 	if a.split.Offset > 0.001 {
 		a.split.Offset = 0
 	} else {
-		a.split.Offset = 0.22
+		a.split.Offset = 0.21
 	}
 	a.split.Refresh()
 }
 
-func (a *application) treeChildren(uid widget.TreeNodeID) []widget.TreeNodeID {
-	s := string(uid)
-	switch {
-	case s == "":
-		return []widget.TreeNodeID{"all", "unfinished", "finished", "queues"}
-	case s == "all":
-		out := make([]widget.TreeNodeID, 0, len(engine.Categories()))
-		for _, c := range engine.Categories() {
-			out = append(out, widget.TreeNodeID("cat:"+c))
+func (a *application) buildEntries(all []engine.Info) []sidebarEntry {
+	counts := map[string]int{}
+	unfinished, finished := 0, 0
+	for _, d := range all {
+		counts[d.Category]++
+		if d.Status == engine.StatusComplete {
+			finished++
+		} else {
+			unfinished++
 		}
-		return out
-	case s == "queues":
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		out := make([]widget.TreeNodeID, 0, len(a.queues))
-		for _, q := range a.queues {
-			out = append(out, widget.TreeNodeID("queue:"+q))
-		}
-		return out
 	}
-	return nil
-}
-
-func (a *application) treeIsBranch(uid widget.TreeNodeID) bool {
-	s := string(uid)
-	return s == "all" || s == "queues" || strings.HasPrefix(s, "cat:")
-}
-
-func (a *application) treeLabel(uid widget.TreeNodeID) string {
+	folder := theme.FolderIcon()
+	out := []sidebarEntry{
+		{text: fmt.Sprintf("All Downloads (%d)", len(all)), kind: "all", icon: folder},
+	}
+	for _, c := range engine.Categories() {
+		out = append(out, sidebarEntry{
+			text: fmt.Sprintf("%s (%d)", c, counts[c]), kind: "category", value: c, indent: 1, icon: folder,
+		})
+	}
+	out = append(out,
+		sidebarEntry{text: fmt.Sprintf("Unfinished (%d)", unfinished), kind: "unfinished", icon: folder},
+		sidebarEntry{text: fmt.Sprintf("Finished (%d)", finished), kind: "finished", icon: folder},
+	)
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	s := string(uid)
-	switch {
-	case s == "all":
-		return fmt.Sprintf("All Downloads (%d)", a.total)
-	case strings.HasPrefix(s, "cat:"):
-		name := strings.TrimPrefix(s, "cat:")
-		return fmt.Sprintf("%s (%d)", name, a.counts[name])
-	case s == "unfinished":
-		return fmt.Sprintf("Unfinished (%d)", a.unfinished)
-	case s == "finished":
-		return fmt.Sprintf("Finished (%d)", a.finished)
-	case s == "queues":
-		return "Queues"
-	case strings.HasPrefix(s, "queue:"):
-		return strings.TrimPrefix(s, "queue:")
+	queues := append([]string(nil), a.queues...)
+	a.mu.Unlock()
+	out = append(out, sidebarEntry{text: "Queues", kind: "", icon: folder})
+	for _, q := range queues {
+		out = append(out, sidebarEntry{text: q, kind: "queue", value: q, indent: 1, icon: folder})
 	}
-	return s
+	return out
 }
 
-func (a *application) selectNode(uid string) {
+func (a *application) applyFilter(kind, value string) {
 	a.mu.Lock()
-	switch {
-	case strings.HasPrefix(uid, "cat:"):
-		a.filter.kind, a.filter.value = "category", strings.TrimPrefix(uid, "cat:")
-	case strings.HasPrefix(uid, "queue:"):
-		a.filter.kind, a.filter.value = "queue", strings.TrimPrefix(uid, "queue:")
-	case uid == "unfinished":
-		a.filter.kind, a.filter.value = "unfinished", ""
-	case uid == "finished":
-		a.filter.kind, a.filter.value = "finished", ""
-	default:
-		a.filter.kind, a.filter.value = "all", ""
-	}
+	a.filter.kind, a.filter.value = kind, value
 	a.mu.Unlock()
 	a.refresh()
 }
@@ -542,11 +597,17 @@ func (a *application) refresh() {
 	a.finished = finished
 	a.mu.Unlock()
 
+	entries := a.buildEntries(all)
+
+	a.mu.Lock()
+	a.entries = entries
+	a.mu.Unlock()
+
 	if a.table != nil {
 		a.table.Refresh()
 	}
-	if a.tree != nil {
-		a.tree.Refresh()
+	if a.cats != nil {
+		a.cats.Refresh()
 	}
 
 	active, speed := 0, int64(0)

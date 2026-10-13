@@ -271,3 +271,117 @@ func (r *miniBarRenderer) Refresh() {
 func (r *miniBarRenderer) Objects() []fyne.CanvasObject { return r.objects }
 
 func (r *miniBarRenderer) Destroy() {}
+
+// headerLabel is a compact, clickable table column header.
+type headerLabel struct {
+	widget.BaseWidget
+	app   *application
+	col   int
+	text  string
+	hover bool
+}
+
+func newHeaderLabel(app *application) *headerLabel {
+	h := &headerLabel{app: app}
+	h.ExtendBaseWidget(h)
+	return h
+}
+
+// SetText updates the header caption.
+func (h *headerLabel) SetText(s string) {
+	if h.text == s {
+		return
+	}
+	h.text = s
+	h.Refresh()
+}
+
+func (h *headerLabel) Tapped(*fyne.PointEvent) {
+	if h.app != nil {
+		h.app.sortBy(h.col)
+	}
+}
+
+func (h *headerLabel) MouseIn(*fyne.PointEvent) { h.hover = true; h.Refresh() }
+
+func (h *headerLabel) MouseMoved(*fyne.PointEvent) {}
+
+func (h *headerLabel) MouseOut() { h.hover = false; h.Refresh() }
+
+type headerRenderer struct {
+	h       *headerLabel
+	text    *canvas.Text
+	bg      *canvas.Rectangle
+	objects []fyne.CanvasObject
+}
+
+func (h *headerLabel) CreateRenderer() fyne.WidgetRenderer {
+	text := canvas.NewText(h.text, theme.ForegroundColor())
+	text.TextStyle = fyne.TextStyle{Bold: true}
+	text.TextSize = theme.CaptionTextSize()
+	bg := canvas.NewRectangle(color.Transparent)
+	return &headerRenderer{h: h, text: text, bg: bg, objects: []fyne.CanvasObject{bg, text}}
+}
+
+func (r *headerRenderer) Layout(size fyne.Size) {
+	r.bg.Resize(size)
+	pad := float32(4)
+	r.text.Move(fyne.NewPos(pad, size.Height/2-r.text.TextSize/2))
+	r.text.Resize(fyne.NewSize(size.Width-pad*2, size.Height))
+}
+
+func (r *headerRenderer) MinSize() fyne.Size {
+	w := fyne.MeasureText(r.h.text, theme.CaptionTextSize(), fyne.TextStyle{Bold: true}).Width + 10
+	return fyne.NewSize(w, theme.CaptionTextSize()+6)
+}
+
+func (r *headerRenderer) Refresh() {
+	r.text.Text = r.h.text
+	if r.h.hover {
+		r.bg.FillColor = theme.HoverColor()
+	} else {
+		r.bg.FillColor = color.Transparent
+	}
+	r.bg.Refresh()
+	r.text.Refresh()
+}
+
+func (r *headerRenderer) Objects() []fyne.CanvasObject { return r.objects }
+
+func (r *headerRenderer) Destroy() {}
+
+// indentSpacer reserves horizontal space so nested sidebar rows line up.
+type indentSpacer struct {
+	widget.BaseWidget
+	w float32
+}
+
+func newIndentSpacer() *indentSpacer {
+	s := &indentSpacer{}
+	s.ExtendBaseWidget(s)
+	return s
+}
+
+func (s *indentSpacer) set(w float32) {
+	if s.w == w {
+		return
+	}
+	s.w = w
+	s.Refresh()
+}
+
+func (s *indentSpacer) MinSize() fyne.Size { return fyne.NewSize(s.w, 1) }
+
+func (s *indentSpacer) CreateRenderer() fyne.WidgetRenderer { return &spacerRenderer{s: s} }
+
+type spacerRenderer struct{ s *indentSpacer }
+
+func (r *spacerRenderer) Layout(fyne.Size) {}
+
+func (r *spacerRenderer) MinSize() fyne.Size { return r.s.MinSize() }
+
+func (r *spacerRenderer) Refresh() {}
+
+func (r *spacerRenderer) Objects() []fyne.CanvasObject { return nil }
+
+func (r *spacerRenderer) Destroy() {}
