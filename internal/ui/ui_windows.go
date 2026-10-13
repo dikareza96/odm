@@ -105,11 +105,11 @@ func (t *downloadTable) TappedSecondary(e *fyne.PointEvent) {
 	t.app.showRowMenu(e.AbsolutePosition)
 }
 
-var columnTitles = []string{"Q", "File Name", "Size", "Status", "Time left", "Transfer rate", "Last Try…", "Description"}
+var columnTitles = []string{"File Name", "Q", "Size", "Status", "Time left", "Transfer rate", "Last Try…", "Description"}
 
 const (
-	colQueue = iota
-	colName
+	colName = iota
+	colQueue
 	colSize
 	colStatus
 	colETA
@@ -122,7 +122,7 @@ const (
 // fixed column widths; the name and description columns share the slack.
 var columnFixed = map[int]float32{
 	colQueue:   44,
-	colSize:    78,
+	colSize:    80,
 	colStatus:  112,
 	colETA:     78,
 	colRate:    100,
@@ -163,9 +163,7 @@ func (a *application) build() {
 			defer a.mu.Unlock()
 			return len(a.items), columnCount
 		},
-		func() fyne.CanvasObject {
-			return container.NewVBox(widget.NewLabel(""), newMiniBar())
-		},
+		func() fyne.CanvasObject { return newTableCell() },
 		a.updateCell,
 	)
 	base.ShowHeaderColumn = false
@@ -408,7 +406,7 @@ func (a *application) buildEntries(all []engine.Info) []sidebarEntry {
 	}
 	for _, c := range engine.Categories() {
 		out = append(out, sidebarEntry{
-			text: fmt.Sprintf("%s (%d)", c, counts[c]), kind: "category", value: c, indent: 1, icon: folder,
+			text: fmt.Sprintf("%s (%d)", c, counts[c]), kind: "category", value: c, indent: 1, icon: iconForCategory(c),
 		})
 	}
 	out = append(out,
@@ -473,40 +471,44 @@ func (a *application) openNewQueueDialog() {
 /* ---------- table ---------- */
 
 func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
-	box := o.(*fyne.Container)
-	lbl := box.Objects[0].(*widget.Label)
-	bar := box.Objects[1].(*miniBar)
+	c, ok := o.(*tableCell)
+	if !ok {
+		return
+	}
+	icon, lbl := c.icon, c.label
 
 	a.mu.Lock()
 	if id.Row < 0 || id.Row >= len(a.items) {
 		a.mu.Unlock()
 		lbl.SetText("")
-		bar.Hide()
+		icon.Hide()
 		return
 	}
 	d := a.items[id.Row]
 	a.mu.Unlock()
 
-	if id.Col == colName && d.Total > 0 {
-		bar.Show()
-		bar.set(d.Progress / 100)
+	if id.Col == colName {
+		icon.Resource = iconForCategory(d.Category)
+		icon.Refresh()
+		icon.Show()
 	} else {
-		bar.Hide()
+		icon.Hide()
 	}
 
 	switch id.Col {
-	case colQueue:
-		lbl.SetText(d.Queue)
 	case colName:
 		lbl.SetText(d.FileName)
+	case colQueue:
+		lbl.SetText(d.Queue)
 	case colSize:
 		lbl.SetText(humanBytes(d.Total))
 	case colStatus:
-		if d.Error != "" {
+		switch {
+		case d.Error != "":
 			lbl.SetText(d.Error)
-		} else if d.Total > 0 && d.Status == engine.StatusDownloading {
-			lbl.SetText(fmt.Sprintf("%s %.0f%%", d.Status, d.Progress))
-		} else {
+		case d.Total > 0 && (d.Status == engine.StatusDownloading || d.Status == engine.StatusQueued):
+			lbl.SetText(fmt.Sprintf("%.2f%%", d.Progress))
+		default:
 			lbl.SetText(string(d.Status))
 		}
 	case colETA:
@@ -521,6 +523,26 @@ func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		} else {
 			lbl.SetText(d.URL)
 		}
+	}
+}
+
+// iconForCategory picks a small file-type icon for a category folder.
+func iconForCategory(cat string) fyne.Resource {
+	switch cat {
+	case "Video":
+		return theme.MediaVideoIcon()
+	case "Audio":
+		return theme.MediaMusicIcon()
+	case "Documents":
+		return theme.DocumentIcon()
+	case "Programs":
+		return theme.ComputerIcon()
+	case "Compressed", "Disk Images":
+		return theme.StorageIcon()
+	case "Images":
+		return theme.MediaPhotoIcon()
+	default:
+		return theme.FileIcon()
 	}
 }
 
