@@ -1,141 +1,216 @@
 # Ochi Download Manager (ODM)
 
-A segmented, resumable download manager written in pure Go, with a desktop UI
-and a headless HTTP/SSE API. Files are fetched over several connections, resumed
-exactly where they stopped, and organised into category folders and queues.
+A segmented, resumable download manager for Windows, Linux and macOS, written
+in Go. ODM opens several connections per file, resumes at the exact byte where
+a transfer stopped, and organizes downloads into categories and scheduled
+queues. It runs as a desktop app, or headless with a JSON API.
 
-## Highlights
+![ODM main window with a download in progress](docs/screenshot.png)
 
-- **Segmented transfers** — up to N sockets per file using `Range: bytes=start-end`
-  (default 8).
-- **Dynamic splitting** — an idle connection takes over the tail half of the
-  busiest chunk instead of sitting still.
-- **Resume** — per-chunk progress persisted as JSON plus a `.odmpart` file.
-- **Graceful fallback** — servers without `Accept-Ranges` are fetched on one stream.
-- **Queue, settings, categories** — concurrent-download cap, global speed limit,
-  and automatic subfolders (`Video/`, `Audio/`, `Documents/`, …).
-- **Everyday actions** — pause / resume, pause-all / resume-all, clear-completed,
-  open file, reveal in folder, remove, or remove + delete the file.
-- **Browser takeover** — an MV3 extension plus a native-messaging host queues
-  downloads from Chrome / Edge / Firefox, carrying referrer and cookies.
-- **Clipboard monitor** — on Windows, copying a downloadable URL queues it.
-- **Desktop UI** — a themed window built with Fyne: icon toolbar, category
-  sidebar, report table with progress bars, and dialogs (Download File Info,
-  Options, per-download progress with tabs and a connection table). No browser
-  and no web server; on headless/non-UI runs the same engine is driven by a
-  JSON + SSE API.
+## Features
 
-## Build
+**Downloading**
+- Up to 32 connections per file using `Range` requests (8 by default), with
+  per-server overrides.
+- An idle connection takes over half of the busiest remaining chunk, so all
+  connections stay busy until the end.
+- Resume after a pause, crash or restart from the exact byte offset.
+- Servers that do not support ranges are fetched on a single stream.
+- Global and per-download speed limits, plus an optional data cap per time
+  window.
+- HTTP and SOCKS5 proxies, or the system proxy (the default).
 
-Requires Go 1.23+. The engine is standard-library only. The desktop UI uses
-[Fyne](https://fyne.io) behind the `fyne` build tag and therefore needs cgo.
+**Organizing**
+- Files are sorted into category folders (`Video/`, `Audio/`, `Documents/`, …),
+  and each category can have its own destination folder.
+- Named queues with a run order. Each queue can download a set number of files
+  at once.
+- A scheduler per queue: start with ODM, start at a set time (once or on chosen
+  weekdays), stop at a set time, retry failed files, and open a file, exit or
+  shut down when the queue finishes.
+- Site logins (HTTP Basic), import and export of the download list, and a site
+  grabber that crawls a page and queues the files it links to.
 
-| Target | Command | Extra requirements |
-| ------ | ------- | ------------------ |
+**Desktop**
+- A main window with a toolbar, category and queue tree, sortable list and
+  multi-select.
+- A progress window per download that shows each connection, and a dialog when
+  a download completes.
+- Runs from the system tray. ODM can launch at login, and starting it again
+  brings the running window forward.
+- Checks GitHub Releases for new versions. It only notifies; it never updates
+  itself.
+
+**Integration**
+- A browser extension (Chrome, Edge, Firefox) hands downloads to ODM through
+  native messaging. ODM can register itself with each browser.
+- On Windows, a clipboard monitor queues downloadable URLs you copy.
+
+## Install
+
+Once a version is tagged, prebuilt archives are attached to
+[GitHub Releases](https://github.com/troke12/odm/releases):
+
+| Platform | Archive |
+| -------- | ------- |
+| Windows x64 | `odm-windows-amd64.zip` |
+| Linux x64 | `odm-linux-amd64.tar.gz` |
+| macOS (Apple silicon) | `odm-darwin-arm64.tar.gz` |
+
+Unpack the archive and run `ODM.exe` (Windows) or `./odm` (Linux, macOS).
+Settings and download state are stored in `<config>/odm/`. `<config>` is
+`%AppData%` on Windows, `~/Library/Application Support` on macOS and `~/.config`
+on Linux.
+
+### Build from source
+
+ODM needs Go 1.23 or later. The engine uses only the standard library. The
+desktop UI is built with [Fyne](https://fyne.io) behind the `fyne` build tag,
+so it needs cgo.
+
+| Target | Command | Requirements |
+| ------ | ------- | ------------ |
 | Windows | `./scripts/build.sh windows` | mingw-w64 (`CC_WINDOWS`, default `x86_64-w64-mingw32-gcc`) |
 | Linux | `./scripts/build.sh linux` | `libgl1-mesa-dev xorg-dev libxkbcommon-dev` |
-| macOS | `./scripts/build.sh darwin` | Xcode command line tools |
+| macOS | `./scripts/build.sh darwin` (or `darwin-intel`) | Xcode command line tools |
 | Headless | `./scripts/build.sh cli` | none |
 
 ```bash
-go test ./...                              # engine tests, no UI needed
-go build -tags fyne -o odm ./cmd/odm        # desktop build for the current OS
-sudo apt install gcc-mingw-w64-x86-64      # for a Windows cross-build from Linux
+go test ./...                          # engine tests, no UI needed
+go test -tags fyne ./internal/ui       # UI tests (cgo)
+go build -tags fyne -o odm ./cmd/odm   # desktop build for the current OS
 ```
 
-## Run
+## Usage
 
 ```bash
-./ODM.exe                        # engine + UI window
-./ODM.exe -dir "D:\\Downloads"    # override the saved folder
-./ODM.exe -add https://host/big.iso -no-ui   # headless: fetch one URL and exit
+ODM.exe                                  # open the app
+ODM.exe -hidden                          # start in the system tray
+ODM.exe -add https://host/big.iso -no-ui # fetch one URL in the terminal, then exit
 ```
 
-Flags: `-addr` (default `127.0.0.1:8721`), `-dir`, `-conns`, `-files`, `-add`,
-`-native-messaging`, `-open`, `-no-ui`. Settings (folder, connections,
-concurrency, speed limit, categories, clipboard) persist in
-`<config>/odm/settings.json`.
+| Flag | Meaning |
+| ---- | ------- |
+| `-dir`, `-conns`, `-files` | Override the download folder, connections per file, and simultaneous downloads |
+| `-add URL` | Download one URL headless and exit |
+| `-no-ui`, `-open` | Run without a window / control whether a window opens |
+| `-hidden` | Start in the tray (used by launch-at-login) |
+| `-serve`, `-addr` | Also serve the web UI and API on `-addr` (default `127.0.0.1:8721`) |
+| `-register-browser`, `-unregister-browser` | Register or remove the browser native host |
+| `-version` | Print the version |
 
-`-native-messaging` runs the browser relay: it does not start a server, it just
-forwards requests to an already-running ODM (`ODM_ADDR`, default `127.0.0.1:8721`).
-See [extension/README.md](extension/README.md) for registering it with a browser.
+**Keyboard shortcuts** (main list): <kbd>Ctrl</kbd>/<kbd>Shift</kbd>+click to
+select several downloads, <kbd>Ctrl</kbd>+<kbd>A</kbd> to select all,
+<kbd>Del</kbd> to remove, <kbd>Enter</kbd> to open the progress window, arrow
+keys to move, and <kbd>Ctrl</kbd>+<kbd>N</kbd> to add a URL. On macOS, use
+<kbd>Cmd</kbd> instead of <kbd>Ctrl</kbd>.
 
-## HTTP API
+**Tray and start-up.** Closing the window hides ODM in the tray, and downloads
+keep running. *Options → General* controls close-to-tray and *Launch ODM on
+startup*. Launch-at-login is registered for the current user only: the `Run`
+key under `HKCU` on Windows, an XDG autostart entry on Linux, and a LaunchAgent
+on macOS. On Linux desktops without a tray (for example GNOME without an
+AppIndicator extension), the icon may not appear. Starting ODM again still
+shows the window.
+
+**Proxy.** *Options → Proxy / Socks* offers three choices:
+- No proxy.
+- System settings (the default): the `HTTP(S)_PROXY` variables, and on Windows
+  also the proxy set in Internet Options. Automatic configuration (PAC)
+  scripts are not evaluated.
+- A manual HTTP or SOCKS5 proxy.
+
+## Browser integration
+
+1. In ODM, open *Options → General → Register*, or run `ODM.exe -register-browser`.
+2. Load the `extension/` folder from this repository as an unpacked extension.
+   Its ID is pinned to `fnondfibgeiffjplpokfgiacjelmbcbk` in Chrome and Edge,
+   and to `odm@ochi.local` in Firefox.
+3. Restart the browser once.
+
+[extension/README.md](extension/README.md) has the details, including where
+the registration is written on each OS.
+
+## Security model
+
+ODM opens **no TCP port by default**. A running instance listens on a Unix
+domain socket in the user's config directory (`odm.sock`). The browser relay
+uses this socket, and it also stops a second copy of ODM from starting. Web
+pages can send requests to `127.0.0.1` but cannot reach a socket file, so
+websites you visit cannot reach the API. The socket needs Windows 10 version
+1803 or later. Without it, ODM still runs, but browser hand-off is disabled.
+
+`-serve` exposes the web UI and API over TCP. That listener requires a random
+token generated at each start and printed at start-up. Opening `/?token=…`
+sets a `SameSite=Strict` cookie; scripts send the `X-ODM-Token` header.
+Requests from any other `Origin` are refused.
+
+## Headless mode and HTTP API
+
+Builds without the desktop UI (`./scripts/build.sh cli`), or runs with
+`-serve`, serve a basic web UI and this JSON API. The web UI covers
+adding, pausing and removing downloads. Scheduler and most Options are desktop
+only.
 
 | Method | Path | Purpose |
 | ------ | ---- | ------- |
-| GET | `/api/settings` (`/api/config`) | current settings |
-| PUT | `/api/settings` | update settings (applied live) |
-| GET | `/api/downloads` | list all downloads |
-| POST | `/api/downloads` | `{"url","dir","connections","headers","speed_limit"}` |
-| GET | `/api/downloads/{id}` | one download |
-| POST | `/api/downloads/{id}/pause` \| `/resume` \| `/retry` | control |
-| POST | `/api/downloads/{id}/open` \| `/reveal` | open file / show in folder |
-| DELETE | `/api/downloads/{id}[?file=true]` | remove entry, optionally delete file |
-| POST | `/api/actions/pause-all` \| `/resume-all` \| `/clear-completed` | batch |
+| GET / PUT | `/api/settings` | Read or update settings (applied immediately) |
+| GET / POST | `/api/downloads` | List downloads, or add `{"url","dir","connections","headers","speed_limit"}` |
+| GET / DELETE | `/api/downloads/{id}` | One download; `DELETE ?file=true` also deletes the file |
+| POST | `/api/downloads/{id}/pause` \| `/resume` \| `/retry` \| `/open` \| `/reveal` | Control a download |
+| POST | `/api/downloads/{id}/limit` \| `/options` | Per-download speed limit / open-when-done |
+| GET | `/api/probe?url=` | Size, type and file name of a URL without adding it |
+| POST | `/api/actions/pause-all` \| `/resume-all` \| `/clear-completed` | Batch actions |
 | GET | `/api/events` | Server-Sent Events stream of the list |
 
-## Architecture
+## How a download works
+
+1. **Probe.** A ranged `GET bytes=0-` returns the file size, range support, file
+   name, cookies and validators.
+2. **Plan.** The file is split into up to N chunks of at least 64 KiB. A tiny
+   last chunk is merged into the one before it.
+3. **Transfer.** N workers each take a chunk and write it into the `.odmpart`
+   file at its absolute offset. A worker that finishes early takes over half
+   of the largest remaining chunk.
+4. **Finish.** The `.odmpart` file is renamed to the final name.
+
+Each chunk's progress (`{id,start,end,done}`) is saved as JSON, so a restart
+continues from the exact byte. Segmented ranges, byte-offset resume and chunk
+splitting are standard download-manager techniques. ODM implements them in
+its own code.
+
+## Project layout
 
 ```
-cmd/odm            CLI entry point; native UI, native-messaging relay, headless add
-internal/engine    probe, chunk planner, segmented transfer, manager, settings, JSON store
-internal/ui        desktop UI (Fyne) — toolbar, category list, report table, dialogs
-internal/server    JSON + SSE API and the embedded web UI (headless)
-internal/native    Chrome/Firefox native-messaging framing
-internal/clipmon   Windows clipboard watcher + URL detection
-internal/osutil    open / reveal helpers
-extension/         MV3 browser extension + native-host manifests
+cmd/odm             entry point: desktop app, native-messaging relay, headless mode
+internal/engine     probe, chunk planner, transfers, queues, scheduler, settings, state
+internal/ui         desktop UI (Fyne): main window, progress, Scheduler, Options
+internal/server     JSON + SSE API, token guard, embedded web UI
+internal/ipc        Unix-socket control channel and single-instance lock
+internal/native     native-messaging framing and browser-launch detection
+internal/browserreg native-host registration for Chrome, Edge, Chromium, Firefox
+internal/sysproxy   OS proxy lookup (environment, Windows Internet Options)
+internal/autostart  launch at login (Run key, XDG autostart, LaunchAgent)
+internal/update     GitHub Releases version check
+internal/clipmon    Windows clipboard watcher and URL detection
+internal/osutil     open, reveal and shutdown helpers
+extension/          MV3 browser extension and native-host manifests
 ```
-
-The Windows build is a GUI subsystem executable (`-H=windowsgui`), so no console
-window appears. The loopback API still runs as an internal control channel so the
-browser native-messaging relay can queue downloads; it is not used to draw the UI.
-
-`internal/engine` uses only the standard library and has no OS bindings, so the
-same engine backs the planned Linux/macOS builds.
-
-### Transfer algorithm
-
-1. **Probe** — a ranged `GET bytes=0-` learns size, `Accept-Ranges`, file name,
-   cookies and validators.
-2. **Plan** — `[0,total)` is split into up to N chunks, never smaller than
-   `MinChunkSize` (23363 B); a tiny tail is folded into the previous chunk.
-3. **Work** — N workers claim chunks and stream them into the `.odmpart` file at
-   their absolute offset.
-4. **Split** — a free worker halves the largest remaining chunk and takes the tail.
-5. **Finish** — the `.odmpart` file is renamed onto the final name.
-
-Resume state records `{id,start,end,done}` per chunk as JSON, so a restart
-continues from the exact byte offset.
-
-## Design notes
-
-- **Connections** — 8 per file by default, configurable per download or in settings.
-- **Chunking** — `[0,total)` is split into chunks no smaller than `MinChunkSize`
-  (23363 B); a tiny tail is folded into the previous chunk.
-- **Dynamic splitting** — a free worker halves the largest remaining chunk.
-- **Resume** — per-chunk state is persisted, so restarts continue precisely.
-- **Fallback** — servers without `Accept-Ranges` are fetched on a single stream.
-
-These are well-known techniques used by download managers generally, implemented
-here from scratch.
 
 ## Roadmap
 
-- Scheduler (start/stop times, days, shut down or exit when done) and sequential
-  queue processing with item reordering.
-- File types list, per-category default folders, per-download properties dialog.
-- 401 challenge handling (Basic + Digest) with a credentials prompt.
-- Zip preview, sounds, virus-scan hook, grabber projects, localisation.
-- HLS/DASH grabber with ffmpeg finalise.
+- A properties dialog for each download.
+- A credentials prompt for HTTP 401 responses (Basic and Digest).
+- ZIP preview, sounds, a virus-scan hook, grabber projects, and translations.
+- An HLS/DASH grabber.
+- Signed self-update, and code-signed Windows builds.
 
 ## License
 
 [MIT](LICENSE) © 2026 Ochi Download Manager contributors.
 
-ODM is an independent, from-scratch implementation. It ships no code, binaries,
-assets or data from any other product and does not bypass copy protection or
-activation. Copyright protects expression, not ideas: this project claims rights
-only over its own source and asserts none over any idea, algorithm or behaviour.
-See [DISCLAIMER.md](DISCLAIMER.md) for the full statement.
+ODM is an independent implementation. It ships no code, binaries, assets or
+data from any other product, and it does not bypass copy protection or
+activation. Copyright protects expression, not ideas. This project claims
+rights only over its own source and asserts none over any idea, algorithm or
+behavior. See [DISCLAIMER.md](DISCLAIMER.md) for the full statement.

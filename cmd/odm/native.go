@@ -4,22 +4,24 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"time"
 
+	"odm/internal/ipc"
 	"odm/internal/native"
 )
 
 // runNativeHost relays browser native-messaging requests to a running ODM
-// instance over its local HTTP API. It is launched by the browser, not by hand.
-func runNativeHost(addr string) {
-	target := os.Getenv("ODM_ADDR")
-	if target == "" {
-		target = addr
+// instance over its control socket. It is launched by the browser, not by
+// hand, as the same user, so it resolves the same config directory;
+// ODM_SOCKET overrides the socket path.
+func runNativeHost(configDir string) {
+	path := os.Getenv("ODM_SOCKET")
+	if path == "" {
+		path = ipc.SocketPath(configDir)
 	}
-	base := "http://" + target
-	client := &http.Client{Timeout: 10 * time.Second}
+	base := ipc.BaseURL
+	client := ipc.Client(path, 10*time.Second)
 
 	err := native.Serve(os.Stdin, os.Stdout, func(m native.Message) native.Reply {
 		switch m.Type {

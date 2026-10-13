@@ -12,15 +12,15 @@ import (
 var urlRe = regexp.MustCompile(`https?://[^\s"'<>()\[\]]+`)
 
 // ClipboardURL returns the first HTTP(S) URL in text whose path names a file
-// type ODM recognises as downloadable.
-func ClipboardURL(text string) (string, bool) {
+// type ODM recognises as downloadable, built in or listed in extra.
+func ClipboardURL(text string, extra ...string) (string, bool) {
 	for _, raw := range urlRe.FindAllString(text, -1) {
 		raw = strings.TrimRight(raw, ".,;:)")
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" {
 			continue
 		}
-		if !engine.KnownFileType(path.Base(u.Path)) {
+		if !engine.KnownFileType(path.Base(u.Path), extra...) {
 			continue
 		}
 		return raw, true

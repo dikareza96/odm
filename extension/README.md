@@ -1,53 +1,43 @@
 # ODM browser integration
 
 The extension hands downloads to ODM through Chrome/Firefox **native messaging**.
-The native host is `ODM.exe -native-messaging`, which relays each request to a
-running ODM instance over `http://127.0.0.1:8721` (override with `ODM_ADDR`).
+The browser starts `ODM.exe` as the native host; ODM recognises that launch and
+relays each request to the running ODM instance over its control socket,
+`<config>/odm/odm.sock` (override with `ODM_SOCKET`). `<config>` is
+`%AppData%` on Windows, `~/Library/Application Support` on macOS and
+`~/.config` on Linux.
 
-## 1. Load the extension (developer / unpacked)
+## 1. Register the native host (once)
 
-- **Chrome/Edge:** `chrome://extensions` → enable *Developer mode* → *Load
-  unpacked* → pick this `extension/` folder. Copy the generated **extension ID**.
-- **Firefox:** `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on*
-  → pick `extension/manifest.json`.
+In ODM: **Options → General → Register browser integration**, or from a shell:
 
-## 2. Register the native host
-
-Edit `native/com.ochi.odm.json` (Chrome) and set:
-
-- `path` → the absolute path to `ODM.exe` (backslashes escaped: `C:\\Tools\\ODM.exe`).
-- `allowed_origins` → `chrome-extension://<the extension ID you copied>/`.
-
-For Firefox use `native/com.ochi.odm.firefox.json` and set the extension id in
-`manifest.json` (`browser_specific_settings.gecko.id`).
-
-### Windows — Chrome/Edge
-
-```cmd
-reg add "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ochi.odm" /ve /t REG_SZ ^
-  /d "C:\path\to\com.ochi.odm.json" /f
-
-reg add "HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.ochi.odm" /ve /t REG_SZ ^
-  /d "C:\path\to\com.ochi.odm.json" /f
+```
+ODM.exe -register-browser      # Windows
+./odm -register-browser        # macOS / Linux
 ```
 
-### Windows — Firefox
+This writes the host manifests to `<config>/odm/native/` and registers them for
+the current user:
 
-```cmd
-reg add "HKCU\Software\Mozilla\NativeMessagingHosts\com.ochi.odm" /ve /t REG_SZ ^
-  /d "C:\path\to\com.ochi.odm.firefox.json" /f
-```
+- **Windows** — `HKCU\Software\{Google\Chrome, Microsoft\Edge, Chromium, Mozilla}\NativeMessagingHosts\com.ochi.odm`.
+- **macOS / Linux** — copies the manifest into each installed browser's
+  `NativeMessagingHosts` folder (Chrome, Chromium, Edge, Firefox).
 
-### macOS / Linux (for reference)
+Run it again after moving `ODM.exe`; `-unregister-browser` removes it.
 
-- Chrome: `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.ochi.odm.json`
-  and `~/.config/google-chrome/NativeMessagingHosts/com.ochi.odm.json`.
-- Firefox: `~/Library/Application Support/Mozilla/NativeMessagingHosts/…`
-  and `~/.mozilla/native-messaging-hosts/…`.
-- The host `path` must point at a runnable ODM binary.
+## 2. Load the extension
+
+- **Chrome / Edge:** `chrome://extensions` (or `edge://extensions`) → enable
+  *Developer mode* → *Load unpacked* → pick this `extension/` folder. The
+  `key` in `manifest.json` pins the ID to `fnondfibgeiffjplpokfgiacjelmbcbk`,
+  which is the origin the host manifest allows; check that the page shows it.
+- **Firefox:** `about:debugging#/runtime/this-firefox` → *Load Temporary
+  Add-on* → pick `manifest.json`. Its add-on ID is `odm@ochi.local`.
+
+Restart the browser once after registering so it re-reads the host list.
 
 ## 3. Use it
 
-Start ODM (`ODM.exe`), then in the browser either click a file link (ODM takes
-over matching download types) or right-click a link/video → **Download with ODM**.
-The popup toggles takeover and tests the connection.
+Keep ODM running, then click a file link (ODM takes over matching download
+types) or right-click a link/video → **Download with ODM**. The popup toggles
+takeover and tests the connection.

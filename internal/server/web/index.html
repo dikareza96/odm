@@ -19,7 +19,7 @@
     <button data-act="stop" class="ghost">■<span>Stop</span></button>
     <button data-act="stop-all" class="ghost">⏹<span>Stop All</span></button>
     <button data-act="delete" class="ghost">✕<span>Delete</span></button>
-    <button data-act="delete-completed" class="ghost">⌫<span>Del Completed</span></button>
+    <button data-act="delete-completed" class="ghost">⌫<span>Clear Done</span></button>
     <button data-act="options" class="ghost">⚙<span>Options</span></button>
     <span class="spacer"></span>
     <button data-act="pause-all" class="ghost">‖<span>Pause All</span></button>
@@ -52,10 +52,10 @@
   </div>
 </div>
 
-<!-- Add / "Download File Info" -->
+<!-- Add / "New Download" -->
 <dialog id="addDialog" class="fileinfo">
   <form method="dialog" id="addForm">
-    <h2>Download File Info</h2>
+    <h2>New Download</h2>
     <div class="fi">
       <div class="fi-fields">
         <label>URL<input id="url" type="text" autocomplete="off" placeholder="https://host/file.zip" /></label>
@@ -102,8 +102,8 @@
     <div class="pg-head" id="pgTitle">Download</div>
     <div class="tabs">
       <button data-tab="status" class="tab active">Download status</button>
-      <button data-tab="limit" class="tab">Speed Limiter</button>
-      <button data-tab="completion" class="tab">Options on completion</button>
+      <button data-tab="limit" class="tab">Speed limit</button>
+      <button data-tab="completion" class="tab">When finished</button>
     </div>
 
     <div class="tab-panel" data-panel="status">
@@ -114,11 +114,11 @@
         <tr><td>Downloaded</td><td id="pgDone"></td></tr>
         <tr><td>Transfer rate</td><td id="pgRate"></td></tr>
         <tr><td>Time left</td><td id="pgEta"></td></tr>
-        <tr><td>Resume capability</td><td id="pgResume"></td></tr>
+        <tr><td>Resumable</td><td id="pgResume"></td></tr>
       </table>
       <div class="pbar big"><i id="pgBar"></i></div>
       <div class="strip" id="pgStrip"></div>
-      <div class="strip-legend">Start positions and download progress by connections</div>
+      <div class="strip-legend">Connection map</div>
       <div id="pgConnWrap">
         <table class="conns">
           <thead><tr><th>N</th><th>Downloaded</th><th>Info</th></tr></thead>

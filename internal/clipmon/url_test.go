@@ -22,3 +22,19 @@ func TestClipboardURL(t *testing.T) {
 		}
 	}
 }
+
+func TestClipboardURLExtraTypes(t *testing.T) {
+	const text = "magnet-ish https://host/linux.torrent"
+	if _, ok := ClipboardURL(text); ok {
+		t.Fatal(".torrent matched without being configured")
+	}
+	for _, extra := range []string{"torrent", ".TORRENT", " torrent "} {
+		if got, ok := ClipboardURL(text, extra); !ok || got != "https://host/linux.torrent" {
+			t.Errorf("extra %q: got (%q,%v)", extra, got, ok)
+		}
+	}
+	// Extras must not leak into later calls (the table is shared state).
+	if _, ok := ClipboardURL(text); ok {
+		t.Fatal("extra type persisted after the call")
+	}
+}

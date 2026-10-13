@@ -13,11 +13,11 @@ const (
 	StatusError       Status = "error"
 )
 
-// Tuning defaults: eight sockets per file, a minimum chunk of ~23 KiB, and a
+// Tuning defaults: eight sockets per file, a minimum chunk of 64 KiB, and a
 // 2 MiB step for query-range fallback.
 const (
 	DefaultConnections = 8
-	MinChunkSize       = 23363
+	MinChunkSize       = 64 << 10 // small enough to split mid-size files, large enough that per-request overhead stays negligible
 	DefaultFileLimit   = 3
 	DefaultChunkStep   = 1 << 21
 	MaxRetries         = 8
@@ -77,6 +77,7 @@ type Info struct {
 	Category     string      `json:"category"`
 	Queue        string      `json:"queue"`
 	Description  string      `json:"description"`
+	Order        int         `json:"order"`
 	SpeedLimit   int64       `json:"speed_limit"`
 	OpenWhenDone bool        `json:"open_when_done"`
 	Chunks       []ChunkInfo `json:"chunks"`

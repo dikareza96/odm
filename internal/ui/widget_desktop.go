@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -21,10 +22,24 @@ import (
 // matching the classic download-manager toolbar.
 type toolButton struct {
 	widget.BaseWidget
-	icon  fyne.Resource
-	text  string
-	onTap func()
-	hover bool
+	icon     fyne.Resource
+	text     string
+	onTap    func()
+	hover    bool
+	disabled bool
+}
+
+// setEnabled greys the button out when its action does not apply to the
+// current selection, as classic download-manager toolbars do.
+func (b *toolButton) setEnabled(on bool) {
+	if b.disabled == !on {
+		return
+	}
+	b.disabled = !on
+	if b.disabled {
+		b.hover = false
+	}
+	b.Refresh()
 }
 
 func newToolButton(icon fyne.Resource, text string, onTap func()) *toolButton {
@@ -34,12 +49,17 @@ func newToolButton(icon fyne.Resource, text string, onTap func()) *toolButton {
 }
 
 func (b *toolButton) Tapped(*fyne.PointEvent) {
-	if b.onTap != nil {
+	if b.onTap != nil && !b.disabled {
 		b.onTap()
 	}
 }
 
-func (b *toolButton) MouseIn(*fyne.PointEvent) { b.hover = true; b.Refresh() }
+func (b *toolButton) MouseIn(*fyne.PointEvent) {
+	if !b.disabled {
+		b.hover = true
+		b.Refresh()
+	}
+}
 
 func (b *toolButton) MouseMoved(*fyne.PointEvent) {}
 
@@ -62,7 +82,7 @@ func (b *toolButton) CreateRenderer() fyne.WidgetRenderer {
 	r.icon.ScaleMode = canvas.ImageScaleSmooth
 	r.label = canvas.NewText(b.text, theme.ForegroundColor())
 	r.label.Alignment = fyne.TextAlignCenter
-	r.label.TextSize = theme.CaptionTextSize()
+	r.label.TextSize = theme.TextSize()
 	r.objects = []fyne.CanvasObject{r.bg, r.icon, r.label}
 	r.Refresh()
 	return r
@@ -70,32 +90,38 @@ func (b *toolButton) CreateRenderer() fyne.WidgetRenderer {
 
 func (r *toolButtonRenderer) Layout(size fyne.Size) {
 	r.bg.Resize(size)
-	const pad = float32(4)
-	iconSize := size.Height * 0.48
+	const pad, iconSize = float32(4), float32(30)
 	r.icon.Move(fyne.NewPos(size.Width/2-iconSize/2, pad))
 	r.icon.Resize(fyne.NewSize(iconSize, iconSize))
-	top := pad + iconSize + 2
+	top := pad + iconSize + 3
 	r.label.Move(fyne.NewPos(0, top))
 	r.label.Resize(fyne.NewSize(size.Width, size.Height-top-pad))
 }
 
 func (r *toolButtonRenderer) MinSize() fyne.Size {
-	w := fyne.MeasureText(r.btn.text, theme.CaptionTextSize(), fyne.TextStyle{}).Width + 14
-	if w < 56 {
-		w = 56
+	w := fyne.MeasureText(r.btn.text, theme.TextSize(), fyne.TextStyle{}).Width + 14
+	if w < 64 {
+		w = 64
 	}
-	return fyne.NewSize(w, 44)
+	return fyne.NewSize(w, 62)
 }
 
 func (r *toolButtonRenderer) Refresh() {
-	if r.btn.hover {
+	switch {
+	case r.btn.disabled:
+		r.bg.FillColor = color.Transparent
+		r.label.Color = theme.DisabledColor()
+	case r.btn.hover:
 		r.bg.FillColor = theme.HoverColor()
-		r.label.Color = theme.PrimaryColor()
-	} else {
+		r.label.Color = theme.ForegroundColor()
+	default:
 		r.bg.FillColor = color.Transparent
 		r.label.Color = theme.ForegroundColor()
 	}
 	r.icon.Resource = r.btn.icon
+	if r.btn.disabled {
+		r.icon.Resource = theme.NewDisabledResource(r.btn.icon)
+	}
 	r.label.Text = r.btn.text
 	r.bg.Refresh()
 	r.icon.Refresh()
@@ -108,31 +134,135 @@ func (r *toolButtonRenderer) Destroy() {}
 
 /* ---------- table cell ---------- */
 
-// tableCell is one table cell: an optional file-type icon, a label and a
-// vertical grid line. Fields are read directly so callers never depend on
-// container index order.
+// cellInset is the text inset shared by cells and headers so they line up.
+const cellInset = float32(5)
+
+// rowHeight is the fixed height of a list row. Cells draw their own text
+// rather than wrapping widget.Label: the label's padding comes from whichever
+// theme the cell resolves when the table happens to create it, which made
+// row heights differ between rows and broke the ruled grid.
+func rowHeight() float32 {
+	return fyne.MeasureText("Ag", theme.TextSize(), fyne.TextStyle{}).Height + 6
+}
+
+// tableCell is one list cell: selection background, optional file-type icon
+// and a single line of text cut with an ellipsis to fit the column.
 type tableCell struct {
 	widget.BaseWidget
-	icon    *widget.Icon
-	label   *widget.Label
-	content *fyne.Container
+	bg      *canvas.Rectangle
+	icon    *canvas.Image
+	text    *canvas.Text
+	full    string
+	hasIcon bool
 }
 
 func newTableCell() *tableCell {
 	c := &tableCell{
-		icon:  widget.NewIcon(theme.FileIcon()),
-		label: widget.NewLabel(""),
+		bg:   canvas.NewRectangle(color.Transparent),
+		icon: canvas.NewImageFromResource(theme.FileIcon()),
+		text: canvas.NewText("", theme.ForegroundColor()),
 	}
-	inner := container.NewBorder(nil, nil, c.icon, nil, c.label)
-	sep := canvas.NewRectangle(odmPalette.border)
-	sep.SetMinSize(fyne.NewSize(1, 1))
+	c.icon.FillMode = canvas.ImageFillContain
+	c.text.TextSize = theme.TextSize()
 	c.ExtendBaseWidget(c)
-	c.content = container.NewBorder(nil, nil, nil, sep, inner)
 	return c
 }
 
-func (c *tableCell) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(c.content)
+func (c *tableCell) setText(s string) {
+	if c.full != s {
+		c.full = s
+		c.Refresh()
+	}
+}
+
+func (c *tableCell) setIcon(res fyne.Resource) {
+	if c.icon.Resource != res {
+		c.icon.Resource = res
+		c.icon.Refresh()
+	}
+}
+
+func (c *tableCell) showIcon(on bool) {
+	if c.hasIcon != on {
+		c.hasIcon = on
+		c.Refresh()
+	}
+}
+
+// setSelected paints the whole row: widget.Table only highlights the one
+// clicked cell, so every cell of the selected row draws its own background.
+func (c *tableCell) setSelected(on bool) {
+	want := color.Color(color.Transparent)
+	if on {
+		want = odmPalette.accentSoft
+	}
+	if c.bg.FillColor != want {
+		c.bg.FillColor = want
+		c.bg.Refresh()
+	}
+}
+
+func (c *tableCell) CreateRenderer() fyne.WidgetRenderer { return &cellRenderer{c: c} }
+
+type cellRenderer struct{ c *tableCell }
+
+func (r *cellRenderer) Layout(size fyne.Size) {
+	c := r.c
+	c.bg.Resize(size)
+	x := cellInset
+	const iconSize = float32(16)
+	if c.hasIcon {
+		c.icon.Move(fyne.NewPos(x, (size.Height-iconSize)/2))
+		c.icon.Resize(fyne.NewSize(iconSize, iconSize))
+		x += iconSize + 5
+	}
+	c.text.Text = ellipsize(c.full, size.Width-x-cellInset, c.text.TextSize)
+	th := c.text.MinSize().Height
+	c.text.Move(fyne.NewPos(x, (size.Height-th)/2))
+	c.text.Resize(fyne.NewSize(size.Width-x-cellInset, th))
+}
+
+func (r *cellRenderer) MinSize() fyne.Size { return fyne.NewSize(20, rowHeight()) }
+
+func (r *cellRenderer) Refresh() {
+	r.c.text.Color = theme.ForegroundColor()
+	r.Layout(r.c.Size())
+	r.c.text.Refresh()
+	canvas.Refresh(r.c)
+}
+
+func (r *cellRenderer) Objects() []fyne.CanvasObject {
+	if r.c.hasIcon {
+		return []fyne.CanvasObject{r.c.bg, r.c.icon, r.c.text}
+	}
+	return []fyne.CanvasObject{r.c.bg, r.c.text}
+}
+
+func (r *cellRenderer) Destroy() {}
+
+// ellipsize shortens s with a trailing "…" so it fits in width.
+func ellipsize(s string, width, size float32) string {
+	if s == "" || width <= 0 {
+		return ""
+	}
+	measure := func(t string) float32 { return fyne.MeasureText(t, size, fyne.TextStyle{}).Width }
+	if measure(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	lo, hi := 0, len(runes)
+	for lo < hi { // longest prefix that still fits with the ellipsis
+		mid := (lo + hi + 1) / 2
+		if measure(string(runes[:mid])+"…") <= width {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if lo == 0 {
+		return ""
+	}
+	return string(runes[:lo]) + "…"
 }
 
 /* ---------- column header ---------- */
@@ -182,9 +312,9 @@ type headerRenderer struct {
 }
 
 func (h *headerLabel) CreateRenderer() fyne.WidgetRenderer {
+	// Regular weight at body size, like a native list-view header.
 	text := canvas.NewText(h.text, theme.ForegroundColor())
-	text.TextStyle = fyne.TextStyle{Bold: true}
-	text.TextSize = theme.CaptionTextSize()
+	text.TextSize = theme.TextSize()
 	bg := canvas.NewRectangle(color.Transparent)
 	line := canvas.NewRectangle(odmPalette.border)
 	line.SetMinSize(fyne.NewSize(1, 1))
@@ -193,16 +323,21 @@ func (h *headerLabel) CreateRenderer() fyne.WidgetRenderer {
 
 func (r *headerRenderer) Layout(size fyne.Size) {
 	r.bg.Resize(size)
-	pad := float32(4)
-	r.text.Move(fyne.NewPos(pad, size.Height/2-r.text.TextSize/2))
-	r.text.Resize(fyne.NewSize(size.Width-pad*2, size.Height))
+	pad := cellInset
+	// Size the text box to its real line height and centre it; stretching it
+	// to the full row height pushed the glyphs below the header and clipped them.
+	th := r.text.MinSize().Height
+	r.text.Move(fyne.NewPos(pad, (size.Height-th)/2))
+	r.text.Resize(fyne.NewSize(size.Width-pad*2, th))
 	r.line.Move(fyne.NewPos(size.Width-1, 0))
 	r.line.Resize(fyne.NewSize(1, size.Height))
 }
 
 func (r *headerRenderer) MinSize() fyne.Size {
-	w := fyne.MeasureText(r.h.text, theme.CaptionTextSize(), fyne.TextStyle{Bold: true}).Width + 10
-	return fyne.NewSize(w, theme.CaptionTextSize()+6)
+	ts := fyne.MeasureText(r.h.text, theme.TextSize(), fyne.TextStyle{})
+	// widget.Table sizes every row to max(cell, header) MinSize, so a taller
+	// header would stretch all the data rows too.
+	return fyne.NewSize(ts.Width+cellInset*2, rowHeight())
 }
 
 func (r *headerRenderer) Refresh() {
@@ -261,7 +396,7 @@ func (r *spacerRenderer) Destroy() {}
 /* ---------- connection strip ---------- */
 
 // chunkStrip draws one bar per connection, positioned and sized in proportion
-// to its byte range ("start positions and download progress by connections").
+// to its byte range ("a per-connection map").
 type chunkStrip struct {
 	widget.BaseWidget
 	mu     sync.Mutex
@@ -349,6 +484,9 @@ func (r *stripRenderer) Layout(size fyne.Size) {
 
 func (r *stripRenderer) MinSize() fyne.Size { return fyne.NewSize(200, 14) }
 
+// Refresh rebuilds the bars when the chunk count changes and always re-lays
+// them out: rebuilt rectangles start at zero size, and fill widths move with
+// progress, so skipping Layout left the strip blank.
 func (r *stripRenderer) Refresh() {
 	r.strip.mu.Lock()
 	need := len(r.strip.chunks)
@@ -356,8 +494,124 @@ func (r *stripRenderer) Refresh() {
 	if need*2 != len(r.objects) {
 		r.rebuild()
 	}
+	r.Layout(r.strip.Size())
+	for _, o := range r.objects {
+		o.Refresh()
+	}
 }
 
 func (r *stripRenderer) Objects() []fyne.CanvasObject { return r.objects }
 
 func (r *stripRenderer) Destroy() {}
+
+/* ---------- grid backdrop ---------- */
+
+// gridBackdrop continues the table's grid below the last row, so the empty
+// part of the list shows ruled rows and column lines like a report view.
+// It sits behind the table; where rows exist the table's own separators
+// cover the same positions.
+type gridBackdrop struct {
+	widget.BaseWidget
+	app *application
+}
+
+func newGridBackdrop(a *application) *gridBackdrop {
+	g := &gridBackdrop{app: a}
+	g.ExtendBaseWidget(g)
+	return g
+}
+
+func (g *gridBackdrop) CreateRenderer() fyne.WidgetRenderer { return &gridRenderer{g: g} }
+
+type gridRenderer struct {
+	g       *gridBackdrop
+	objects []fyne.CanvasObject
+	size    fyne.Size
+}
+
+func (r *gridRenderer) Layout(size fyne.Size) {
+	r.size = size
+	a := r.g.app
+	a.mu.Lock()
+	rows, rowH, headH := len(a.items), a.rowH, a.headH
+	widths := append([]float32(nil), a.colWidths...)
+	a.mu.Unlock()
+	if rowH <= 0 {
+		r.objects = nil
+		return
+	}
+	// widget.Table spaces cells by its theme's Padding and centres a 1px
+	// divider in that gap; mirror that so the lines continue seamlessly.
+	gap := a.table.Theme().Size(theme.SizeNamePadding)
+	sep := theme.SeparatorThicknessSize()
+	off := (gap - sep) / 2
+	var objs []fyne.CanvasObject
+	line := func(x, y, w, h float32) {
+		l := canvas.NewRectangle(odmPalette.border)
+		l.Move(fyne.NewPos(x, y))
+		l.Resize(fyne.NewSize(w, h))
+		objs = append(objs, l)
+	}
+	top := headH + gap + float32(rows)*(rowH+gap)
+	for y := top - gap + off; y < size.Height; y += rowH + gap {
+		line(0, y, size.Width, sep)
+	}
+	// Column lines only when every column fits: once the table scrolls
+	// sideways its offset is unknown here and the lines would drift.
+	full := float32(0)
+	for _, w := range widths {
+		full += w + gap
+	}
+	if full <= size.Width+gap {
+		x := float32(0)
+		for _, w := range widths {
+			x += w
+			line(x+off, top, sep, size.Height-top)
+			x += gap
+		}
+	}
+	r.objects = objs
+}
+
+func (r *gridRenderer) MinSize() fyne.Size { return fyne.NewSize(0, 0) }
+
+func (r *gridRenderer) Refresh() {
+	r.Layout(r.g.Size())
+	canvas.Refresh(r.g)
+}
+
+func (r *gridRenderer) Objects() []fyne.CanvasObject { return r.objects }
+
+func (r *gridRenderer) Destroy() {}
+
+/* ---------- tappable icon ---------- */
+
+// tapIcon is a small clickable icon, used for the expand arrows in the
+// category tree so toggling a node does not also change the filter.
+type tapIcon struct {
+	widget.Icon
+	onTap func()
+}
+
+func newTapIcon() *tapIcon {
+	t := &tapIcon{}
+	t.ExtendBaseWidget(t)
+	return t
+}
+
+func (t *tapIcon) Tapped(*fyne.PointEvent) {
+	if t.onTap != nil {
+		t.onTap()
+	}
+}
+
+/* ---------- panel frame ---------- */
+
+// framed draws a thin border around a panel, like the sunken frames that
+// separate the category tree from the list.
+func framed(content fyne.CanvasObject) fyne.CanvasObject {
+	border := canvas.NewRectangle(color.Transparent)
+	border.StrokeColor = odmPalette.border
+	border.StrokeWidth = 1
+	return container.NewStack(border, container.New(layout.NewCustomPaddedLayout(1, 1, 1, 1), content))
+}

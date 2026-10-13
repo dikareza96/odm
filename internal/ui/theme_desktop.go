@@ -54,6 +54,9 @@ func newTheme() fyne.Theme {
 }
 
 func (t odmTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	if c, ok := toolColors[name]; ok {
+		return c
+	}
 	p := odmPalette
 	switch name {
 	case theme.ColorNameBackground:
@@ -130,6 +133,50 @@ func (t odmTheme) Size(name fyne.ThemeSizeName) float32 {
 		return 16
 	case theme.SizeNameLineSpacing:
 		return 2
+	}
+	return t.Theme.Size(name)
+}
+
+// Toolbar icon tints, resolved through odmTheme.Color so they follow the
+// palette. Soft, desaturated hues keep a coloured toolbar from looking loud
+// on the dark background.
+const (
+	colorToolAdd    fyne.ThemeColorName = "odm-tool-add"
+	colorToolRun    fyne.ThemeColorName = "odm-tool-run"
+	colorToolStop   fyne.ThemeColorName = "odm-tool-stop"
+	colorToolDelete fyne.ThemeColorName = "odm-tool-delete"
+	colorToolConfig fyne.ThemeColorName = "odm-tool-config"
+	colorToolSched  fyne.ThemeColorName = "odm-tool-sched"
+	colorToolQueue  fyne.ThemeColorName = "odm-tool-queue"
+)
+
+var toolColors = map[fyne.ThemeColorName]color.NRGBA{
+	colorToolAdd:    {R: 0x5C, G: 0xC8, B: 0xA8, A: 0xFF},
+	colorToolRun:    {R: 0x7F, G: 0xB2, B: 0xFF, A: 0xFF},
+	colorToolStop:   {R: 0xB4, G: 0xBC, B: 0xCC, A: 0xFF},
+	colorToolDelete: {R: 0xF0, G: 0x7A, B: 0x9A, A: 0xFF},
+	colorToolConfig: {R: 0x9D, G: 0x8C, B: 0xF5, A: 0xFF},
+	colorToolSched:  {R: 0xE6, G: 0xA8, B: 0x8C, A: 0xFF},
+	colorToolQueue:  {R: 0x7C, G: 0xC4, B: 0xE8, A: 0xFF},
+}
+
+// compactTheme tightens padding for the category tree so its rows sit at
+// about 20px, like a classic tree view, without shrinking dialogs and forms
+// that use the base theme.
+type compactTheme struct {
+	fyne.Theme
+}
+
+func (t compactTheme) Size(name fyne.ThemeSizeName) float32 {
+	switch name {
+	case theme.SizeNamePadding:
+		return 1
+	case theme.SizeNameInnerPadding:
+		return 2
+	case theme.SizeNameLineSpacing:
+		return 1
+	case theme.SizeNameInlineIcon:
+		return 15
 	}
 	return t.Theme.Size(name)
 }

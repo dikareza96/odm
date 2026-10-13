@@ -32,6 +32,7 @@ type Download struct {
 	OpenWhenDone bool
 	Queue        string
 	Description  string
+	Order        int
 
 	Total   int64
 	RangeOK bool
@@ -42,13 +43,18 @@ type Download struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
-	client   *http.Client
-	limiter  *Limiter
-	shared   *Limiter
-	cancel   context.CancelFunc
+	client  *http.Client
+	limiter *Limiter
+	shared  *Limiter
+	cancel  context.CancelFunc
+	// pauseReq records a Pause that arrived while no transfer context exists
+	// yet (the manager has dispatched the download but Start has not run), so
+	// Start honours it instead of the pause being silently dropped.
+	pauseReq bool
 	file     *os.File
 	cookies  []*http.Cookie
 	auth     func(host string) (string, string, bool)
+	catDirs  map[string]string
 	onUpdate func(*Download)
 
 	lastDone int64
@@ -113,13 +119,39 @@ func (d *Download) SetAuthLookup(fn func(host string) (string, string, bool)) {
 	d.mu.Unlock()
 }
 
+// SetCategoryDirs installs per-category destination folders.
+func (d *Download) SetCategoryDirs(dirs map[string]string) {
+	cp := make(map[string]string, len(dirs))
+	for k, v := range dirs {
+		cp[k] = v
+	}
+	d.mu.Lock()
+	d.catDirs = cp
+	d.mu.Unlock()
+}
+
 // SetOnUpdate registers a callback invoked when visible state changes.
 func (d *Download) SetOnUpdate(fn func(*Download)) { d.onUpdate = fn }
 
 // Start runs the transfer to completion, pause or error. It blocks.
 func (d *Download) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
+	defer func() {
+		cancel()
+		d.mu.Lock()
+		// Drop the spent cancel func: a Pause between this run and the next
+		// must set pauseReq, not cancel a context that is already gone.
+		d.cancel = nil
+		d.pauseReq = false
+		d.mu.Unlock()
+	}()
 	d.mu.Lock()
+	if d.pauseReq {
+		d.Status = StatusPaused
+		d.mu.Unlock()
+		d.notify(true)
+		return
+	}
 	d.cancel = cancel
 	d.Status = StatusDownloading
 	d.Err = ""
@@ -129,7 +161,15 @@ func (d *Download) Start(parent context.Context) {
 	d.notify(true)
 
 	if err := d.prepare(ctx); err != nil {
-		d.fail(err)
+		// A cancelled context means pause (or shutdown) during the probe, not
+		// a failure; same rule as the ctx.Err() check after the workers.
+		if ctx.Err() != nil {
+			d.mu.Lock()
+			d.Status = StatusPaused
+			d.mu.Unlock()
+		} else {
+			d.fail(err)
+		}
 		d.notify(true)
 		return
 	}
@@ -226,7 +266,11 @@ func (d *Download) openTarget(_ string) error {
 		if cat == "" {
 			cat = Category(d.FileName)
 		}
-		dir = filepath.Join(dir, cat)
+		if custom := d.catDirs[cat]; strings.TrimSpace(custom) != "" {
+			dir = custom
+		} else {
+			dir = filepath.Join(dir, cat)
+		}
 	}
 	d.Dir = dir
 	final := filepath.Join(dir, d.FileName)
@@ -445,6 +489,9 @@ func (d *Download) finish() error {
 func (d *Download) Pause() {
 	d.mu.Lock()
 	cancel := d.cancel
+	if cancel == nil {
+		d.pauseReq = true
+	}
 	d.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -483,6 +530,7 @@ type State struct {
 	CategoryName string            `json:"category_name,omitempty"`
 	Queue        string            `json:"queue,omitempty"`
 	Description  string            `json:"description,omitempty"`
+	Order        int               `json:"order,omitempty"`
 	Status       Status            `json:"status"`
 	Err          string            `json:"error,omitempty"`
 	Chunks       []*Chunk          `json:"chunks"`
@@ -508,7 +556,7 @@ func (d *Download) State() State {
 		ID: d.ID, URL: d.URL, FinalURL: d.FinalURL, FileName: d.FileName, Dir: d.Dir,
 		BaseDir: d.BaseDir, Headers: d.Headers, Connections: d.Connections, SpeedLimit: d.SpeedLimit,
 		OpenWhenDone: d.OpenWhenDone, CategoryName: d.CategoryName,
-		Queue: d.Queue, Description: d.Description,
+		Queue: d.Queue, Description: d.Description, Order: d.Order,
 		Total: d.Total, RangeOK: d.RangeOK, Status: status, Err: d.Err,
 		Chunks: chunks, CreatedAt: d.CreatedAt, UpdatedAt: time.Now(),
 	}
@@ -533,6 +581,7 @@ func Restore(s State, client *http.Client) *Download {
 	d.CategoryName = s.CategoryName
 	d.Queue = s.Queue
 	d.Description = s.Description
+	d.Order = s.Order
 	d.Chunks = s.Chunks
 	d.Err = s.Err
 	d.CreatedAt = s.CreatedAt
@@ -598,10 +647,17 @@ func (d *Download) infoLocked() Info {
 		ID: d.ID, URL: d.URL, FinalURL: d.FinalURL, FileName: d.FileName, FilePath: path,
 		Dir: d.Dir, Status: d.Status, Error: d.Err, Total: d.Total, Done: done,
 		Progress: pct, Speed: d.speed, Connections: d.Connections, Active: active,
-		RangeOK: d.RangeOK, Category: d.category(), Queue: d.Queue, Description: d.Description, Chunks: chunks,
+		RangeOK: d.RangeOK, Category: d.category(), Queue: d.Queue, Description: d.Description, Order: d.Order, Chunks: chunks,
 		SpeedLimit: d.SpeedLimit, OpenWhenDone: d.OpenWhenDone,
 		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
+}
+
+// doneBytes is the number of bytes received so far.
+func (d *Download) doneBytes() int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.doneLocked()
 }
 
 func (d *Download) doneLocked() int64 {

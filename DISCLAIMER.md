@@ -1,11 +1,15 @@
 # Disclaimer
 
-## Independent, from-scratch implementation
+## Independent implementation
 
-ODM (Ochi Download Manager) is an original work written from scratch. It contains
-no source code, binaries, resources, artwork, data files, strings or other assets
-copied or extracted from any other product. Nothing in this repository is derived
-from third-party source code.
+ODM (Ochi Download Manager) is an original work. Its source code was written for
+this project; it contains no source code, binaries, resources, artwork or data
+files copied from any other product.
+
+Like any application in an established category, ODM follows conventions users
+already know — a toolbar, a category sidebar, a download list with size, status
+and time-left columns, an add-download dialog. Everyday interface vocabulary of
+that kind is used for familiarity and is not taken from any particular product.
 
 ## Ideas are not protected
 

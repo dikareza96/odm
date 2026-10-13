@@ -19,6 +19,18 @@ func Open(path string) error {
 	}
 }
 
+// Shutdown powers the machine off, as the scheduler's "when done" action.
+func Shutdown() error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("shutdown", "/s", "/t", "0").Start()
+	case "darwin":
+		return exec.Command("osascript", "-e", `tell app "System Events" to shut down`).Start()
+	default:
+		return exec.Command("systemctl", "poweroff").Start()
+	}
+}
+
 // Reveal shows the file in the OS file manager, selecting it when supported.
 func Reveal(path string) error {
 	switch runtime.GOOS {

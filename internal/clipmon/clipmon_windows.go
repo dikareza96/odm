@@ -50,7 +50,9 @@ func readClipboard() string {
 
 // Watch polls the clipboard and calls onURL once per newly copied downloadable
 // URL. It returns when ctx is cancelled.
-func Watch(ctx context.Context, onURL func(string)) {
+// fileTypes is read on every clipboard change so edits in Options apply
+// without restarting the watcher.
+func Watch(ctx context.Context, fileTypes func() []string, onURL func(string)) {
 	var last uint32
 	seen := map[string]bool{}
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -65,7 +67,7 @@ func Watch(ctx context.Context, onURL func(string)) {
 				continue
 			}
 			last = uint32(seq)
-			if u, ok := ClipboardURL(readClipboard()); ok && !seen[u] {
+			if u, ok := ClipboardURL(readClipboard(), fileTypes()...); ok && !seen[u] {
 				seen[u] = true
 				onURL(u)
 			}

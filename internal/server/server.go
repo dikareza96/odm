@@ -21,6 +21,10 @@ var webFS embed.FS
 type Server struct {
 	mgr *engine.Manager
 
+	// OnShow, when set, brings the desktop window forward; a second ODM
+	// launch calls it over the control socket instead of starting twice.
+	OnShow func()
+
 	mu   sync.Mutex
 	subs map[chan []byte]struct{}
 }
@@ -46,6 +50,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/downloads/{id}", s.handleDelete)
 	mux.HandleFunc("POST /api/actions/{action}", s.handleBatch)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("POST /api/show", func(w http.ResponseWriter, _ *http.Request) {
+		if s.OnShow == nil {
+			http.Error(w, "no window to show", http.StatusNotFound)
+			return
+		}
+		s.OnShow()
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	sub, err := fs.Sub(webFS, "web")
 	if err == nil {

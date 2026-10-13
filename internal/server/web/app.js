@@ -266,7 +266,7 @@ document.querySelectorAll(".grid thead th").forEach((th) => {
   };
 });
 
-/* ---------- Add: "Download File Info" ---------- */
+/* ---------- Add: "New Download" ---------- */
 
 let probeTimer, probed = null;
 

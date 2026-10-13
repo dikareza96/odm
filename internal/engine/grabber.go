@@ -47,6 +47,7 @@ func (m *Manager) Grab(ctx context.Context, o GrabberOptions, progress func(page
 	if err != nil || start.Hostname() == "" {
 		return GrabberResult{}, fmt.Errorf("invalid start URL")
 	}
+	fileTypes := m.Settings().FileTypes
 
 	type item struct {
 		u     *url.URL
@@ -80,7 +81,7 @@ func (m *Manager) Grab(ctx context.Context, o GrabberOptions, progress func(page
 			}
 			seen[key] = true
 
-			if KnownFileType(path.Base(ref.Path)) {
+			if KnownFileType(path.Base(ref.Path), fileTypes...) {
 				if len(res.Files) >= o.MaxFiles {
 					break
 				}
@@ -119,7 +120,7 @@ func (m *Manager) fetchPage(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", DefaultUserAgent)
+	req.Header.Set("User-Agent", currentUserAgent())
 	resp, err := m.httpClient().Do(req)
 	if err != nil {
 		return "", err

@@ -3,12 +3,23 @@
 package ui
 
 import (
+	"context"
 	"errors"
 
 	"odm/internal/engine"
 )
 
-// Run is unavailable outside Windows; the web UI is used there instead.
-func Run(*engine.Manager) error {
-	return errors.New("the native UI is Windows-only")
+// Available reports whether this build includes the desktop UI.
+const Available = false
+
+// Options mirrors the desktop build's Run options.
+type Options struct {
+	Show   <-chan struct{}
+	Hidden bool
+}
+
+// Run is unavailable in headless builds (built without the fyne tag); the web
+// UI is used there instead.
+func Run(context.Context, *engine.Manager, Options) error {
+	return errors.New("this build has no desktop UI; rebuild with -tags fyne")
 }

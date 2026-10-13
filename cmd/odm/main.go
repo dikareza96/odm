@@ -1,9 +1,12 @@
 // Command odm is Ochi Download Manager: a segmented, resumable download engine
-// with a local web UI shown in a WebView2/Edge app window on Windows.
+// with a desktop UI, a browser native-messaging relay and a headless mode.
 package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -17,15 +20,29 @@ import (
 	"syscall"
 	"time"
 
+	"odm/internal/browserreg"
 	"odm/internal/clipmon"
 	"odm/internal/engine"
+	"odm/internal/ipc"
+	"odm/internal/native"
+	"odm/internal/osutil"
 	"odm/internal/server"
+	"odm/internal/sysproxy"
 	"odm/internal/ui"
 	"odm/internal/version"
 )
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8721", "listen address")
+	// A browser starting the native host passes its own arguments (origin
+	// or manifest path), never our flags, so recognise that before parsing;
+	// otherwise ODM would open as a second full instance.
+	if native.LaunchedByBrowser(os.Args[1:]) {
+		runNativeHost(configBaseDir())
+		return
+	}
+
+	addr := flag.String("addr", "127.0.0.1:8721", "web UI/API address used with -serve")
+	serve := flag.Bool("serve", false, "also serve the web UI and API on -addr (token-protected)")
 	dir := flag.String("dir", "", "download folder (blank = saved setting / ~/Downloads)")
 	conns := flag.Int("conns", 0, "connections per download (0 = saved setting)")
 	files := flag.Int("files", 0, "simultaneous downloads (0 = saved setting)")
@@ -34,6 +51,9 @@ func main() {
 	open := flag.Bool("open", true, "open the UI window on start")
 	noUI := flag.Bool("no-ui", false, "never open a UI window")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	hidden := flag.Bool("hidden", false, "start in the system tray without showing the window (used at login)")
+	regBrowser := flag.Bool("register-browser", false, "register the browser extension's native host for this user and exit")
+	unregBrowser := flag.Bool("unregister-browser", false, "remove the browser native host registration and exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -41,15 +61,39 @@ func main() {
 		return
 	}
 
+	baseDir := configBaseDir()
 	if *nativeHost {
-		runNativeHost(*addr)
+		runNativeHost(baseDir)
 		return
 	}
+	if *regBrowser || *unregBrowser {
+		os.Exit(runBrowserRegistration(*regBrowser, baseDir))
+	}
 
-	baseDir := configBaseDir()
 	if f, err := os.OpenFile(filepath.Join(baseDir, "odm.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 		log.SetOutput(f)
 		defer f.Close()
+	}
+
+	// Claim the control socket before anything touches state: it is the
+	// single-instance lock, and a second instance must not resume the same
+	// downloads even briefly.
+	sock, err := ipc.Listen(ipc.SocketPath(baseDir))
+	if errors.Is(err, ipc.ErrRunning) {
+		// Launching ODM again (e.g. from the Start menu while it sits in the
+		// tray) should bring the running window forward, not do nothing.
+		resp, perr := ipc.Client(ipc.SocketPath(baseDir), 3*time.Second).Post(ipc.BaseURL+"/api/show", "", nil)
+		if perr == nil {
+			resp.Body.Close()
+		}
+		fmt.Fprintln(os.Stderr, "ODM is already running.")
+		return
+	}
+	if err != nil {
+		// Without the socket ODM still works; only browser hand-off and the
+		// single-instance check are lost (e.g. Windows older than 10 1803).
+		fmt.Fprintln(os.Stderr, "control socket unavailable, browser integration disabled:", err)
+		log.Println("control socket:", err)
 	}
 	settingsPath := filepath.Join(baseDir, "settings.json")
 	fallback := defaultDownloadDir()
@@ -70,6 +114,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	engine.SystemProxy = sysproxy.Func()
 	mgr := engine.NewManager(settings, settingsPath)
 	mgr.SetStore(store)
 	if states, err := store.Load(); err == nil {
@@ -78,59 +123,146 @@ func main() {
 
 	srv := server.New(mgr)
 	mgr.SetOnChange(srv.Broadcast)
+	showUI := make(chan struct{}, 1)
+	srv.OnShow = func() {
+		select {
+		case showUI <- struct{}{}:
+		default: // a show is already pending
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	mgr.Begin(ctx)
 	go mgr.Start(ctx)
 
+	// Scheduler "when done" actions for headless runs. The desktop UI installs
+	// its own handler, which asks for confirmation before shutting down.
+	mgr.SetActionHandler(func(act engine.Action) {
+		log.Printf("scheduler: %s (queue %q)", act.Kind, act.Queue)
+		switch act.Kind {
+		case engine.ActionOpen:
+			_ = osutil.Open(act.Path)
+		case engine.ActionShutdown:
+			if err := osutil.Shutdown(); err != nil {
+				log.Println("shutdown:", err)
+			}
+			stop()
+		case engine.ActionExit:
+			stop()
+		}
+	})
+
 	if settings.Clipboard {
-		go clipmon.Watch(ctx, func(u string) {
+		go clipmon.Watch(ctx, func() []string { return mgr.Settings().FileTypes }, func(u string) {
 			mgr.Add(u, "", 0, nil, 0)
 		})
 	}
 
-	listener, err := net.Listen("tcp", *addr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ODM is already running (or %s is busy): %v\n", *addr, err)
-		log.Println("bind:", err)
-		return
+	// Control channel for the browser relay: same API, over the socket only.
+	var servers []*http.Server
+	if sock != nil {
+		ctrl := &http.Server{Handler: srv.Handler()}
+		servers = append(servers, ctrl)
+		go func() {
+			if err := ctrl.Serve(sock); err != nil && err != http.ErrServerClosed {
+				log.Println("control socket:", err)
+			}
+		}()
 	}
-	httpSrv := &http.Server{Handler: srv.Handler()}
-	go func() {
-		if err := httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Println("server:", err)
+	stopServers := func() {
+		for _, s := range servers {
+			shutdown(s)
 		}
-	}()
-
-	url := "http://" + *addr
+	}
 
 	if *add != "" {
 		info := mgr.Add(*add, settings.Dir, settings.Connections, nil, 0)
 		fmt.Printf("added %s (%s)\n", info.FileName, info.ID)
 		waitFor(ctx, mgr, info.ID)
-		shutdown(httpSrv)
+		stopServers()
 		return
 	}
 
-	fmt.Printf("Ochi Download Manager listening on %s\n", url)
+	// The TCP listener is opt-in. Desktop builds need it only for -serve;
+	// headless builds have no other UI, so asking for one starts it too.
+	webUI := !ui.Available && *open && !*noUI
+	webURL := ""
+	if *serve || webUI {
+		token := newToken()
+		ln, err := net.Listen("tcp", *addr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot serve the web UI on %s: %v\n", *addr, err)
+			log.Println("web bind:", err)
+			stopServers()
+			return
+		}
+		web := &http.Server{Handler: server.Guard(token, srv.Handler())}
+		servers = append(servers, web)
+		go func() {
+			if err := web.Serve(ln); err != nil && err != http.ErrServerClosed {
+				log.Println("web server:", err)
+			}
+		}()
+		webURL = "http://" + *addr + "/?token=" + token
+		fmt.Printf("web UI: %s\n", webURL)
+	}
+
 	fmt.Printf("state: %s\ndownloads: %s\n", baseDir, settings.Dir)
 
 	// On Windows the UI is a native Win32 window (no browser). The loopback API
 	// stays up as an internal control channel for the browser relay.
-	if runtime.GOOS == "windows" && *open && !*noUI {
-		if err := ui.Run(mgr); err != nil {
+	// Any build with the desktop UI compiled in uses it; only headless builds
+	// fall back to the browser page.
+	if ui.Available && *open && !*noUI {
+		if err := ui.Run(ctx, mgr, ui.Options{Show: showUI, Hidden: *hidden}); err != nil {
 			log.Println("ui:", err)
 		}
-		shutdown(httpSrv)
+		stopServers()
 		return
 	}
 
-	if *open && !*noUI {
-		openUI(url)
+	if webUI {
+		openUI(webURL)
 	}
 	<-ctx.Done()
-	shutdown(httpSrv)
+	stopServers()
+}
+
+// runBrowserRegistration handles -register-browser / -unregister-browser and
+// returns the process exit code.
+func runBrowserRegistration(register bool, baseDir string) int {
+	var results []browserreg.Result
+	if register {
+		exe, err := os.Executable()
+		if err == nil {
+			exe, err = filepath.EvalSymlinks(exe)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cannot locate the ODM executable:", err)
+			return 1
+		}
+		results = browserreg.Register(exe, baseDir)
+	} else {
+		results = browserreg.Unregister()
+	}
+	code := 0
+	for _, r := range results {
+		fmt.Println(r)
+		if r.Err != nil {
+			code = 1
+		}
+	}
+	return code
+}
+
+// newToken returns a random per-run secret for the web UI.
+func newToken() string {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		panic("odm: no randomness for the web token: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
 
 func waitFor(ctx context.Context, mgr *engine.Manager, id string) {

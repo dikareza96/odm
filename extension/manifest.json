@@ -3,8 +3,27 @@
   "name": "ODM Integration",
   "version": "1.0.0",
   "description": "Send browser downloads to Ochi Download Manager.",
-  "permissions": ["downloads", "contextMenus", "storage", "nativeMessaging", "cookies"],
-  "host_permissions": ["<all_urls>"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "ODM", "default_popup": "popup.html" }
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnbVp5lpC2ptJwBZbix8OqiV4t6Q2vkgD8PTeOfSW0ZtHJlmDGdAJBmx/PmNT8ywGHr9gKvswaOTC/zhy/uQNTXWDHjCQBFVK6FtnzdNqT1NnFj+4MUbTuyViCmjrbghRGJkkDpWekWAn78KPPoLCWStY7WMuRESB2LxnP74wcydsGJAfCw6OgD2lkK8EJH6m6fTxnOLiRkaG/R36DHrUxlOq8QfMPjwzxP5GmDiCkSPwfWf7+A/vjaUbwTpI8Vivz3khaYq7tE4kowZw0EqHPSkuHib3MjmTllF6Y9SkzafWVT8yWL55Pa6RNDfHopbMwPA8D1UJFSw3u7bUqJA8+wIDAQAB",
+  "permissions": [
+    "downloads",
+    "contextMenus",
+    "storage",
+    "nativeMessaging",
+    "cookies"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "ODM",
+    "default_popup": "popup.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "odm@ochi.local"
+    }
+  }
 }
