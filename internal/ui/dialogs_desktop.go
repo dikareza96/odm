@@ -232,7 +232,9 @@ func (a *application) openOptionsTab(tab int) {
 	clipCheck.SetChecked(settings.Clipboard)
 	updCheck := widget.NewCheck("Check for updates at start-up", nil)
 	updCheck.SetChecked(!settings.NoUpdateCheck)
-	regBtn := widget.NewButtonWithIcon("Register", theme.LoginIcon(), a.registerBrowser)
+	// The result shows on this Options window; on the main window it was
+	// hidden behind Options.
+	regBtn := widget.NewButtonWithIcon("Register", theme.LoginIcon(), func() { a.registerBrowser(w) })
 	startupCheck := widget.NewCheck("Launch ODM on startup (in the system tray)", nil)
 	startupWas := autostart.Enabled()
 	startupCheck.SetChecked(startupWas)
@@ -776,21 +778,44 @@ func (a *application) refreshAddress(d engine.Info) {
 
 // registerBrowser points Chrome, Edge, Chromium and Firefox at this ODM
 // executable as the extension's native host, then reports per browser.
-func (a *application) registerBrowser() {
+func (a *application) registerBrowser(parent fyne.Window) {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
 	}
 	if err != nil {
-		dialog.ShowError(fmt.Errorf("cannot locate the ODM executable: %w", err), a.win)
+		dialog.ShowError(fmt.Errorf("cannot locate the ODM executable: %w", err), parent)
 		return
 	}
-	var lines []string
+	var ok, skipped, failed []string
 	for _, r := range browserreg.Register(exe, a.mgr.ConfigDir()) {
-		lines = append(lines, r.String())
+		switch {
+		case r.Err != nil:
+			failed = append(failed, r.String())
+		case r.Skipped:
+			skipped = append(skipped, r.Browser)
+		default:
+			ok = append(ok, r.Browser)
+		}
 	}
-	dialog.ShowInformation("Browser integration",
-		strings.Join(lines, "\n")+"\n\nLoad the ODM extension in the browser, then restart the browser once.", a.win)
+	// A summary people can act on; the registry or folder detail only
+	// matters when something failed.
+	var b strings.Builder
+	if len(ok) > 0 {
+		fmt.Fprintf(&b, "ODM is registered for %s.\n", strings.Join(ok, ", "))
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(&b, "Not installed, skipped: %s.\n", strings.Join(skipped, ", "))
+	}
+	if len(failed) > 0 {
+		fmt.Fprintf(&b, "\nCould not register:\n%s\n", strings.Join(failed, "\n"))
+	}
+	b.WriteString("\nNext: install the ODM extension in the browser, then restart the browser once.")
+	title := "Browser integration"
+	if len(failed) > 0 {
+		title = "Browser integration: some browsers failed"
+	}
+	dialog.ShowInformation(title, b.String(), parent)
 }
 
 /* ---------- update check ---------- */
