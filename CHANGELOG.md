@@ -6,6 +6,8 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-13
+
 ### Added
 
 - Segmented, resumable download engine: multiple sockets per file using
@@ -52,3 +54,6 @@ All notable changes to ODM are documented here. The format is based on
 - Local control channel over a Unix domain socket (browser relay, single
   instance); no TCP port is opened unless `-serve` is given, and that
   listener requires a per-run token and rejects foreign origins.
+
+[Unreleased]: https://github.com/troke12/odm/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/troke12/odm/releases/tag/v0.1.0
