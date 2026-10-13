@@ -126,6 +126,8 @@ type addRequest struct {
 	OpenWhenDone bool              `json:"open_when_done"`
 	Category     string            `json:"category"`
 	FileName     string            `json:"file_name"`
+	Queue        string            `json:"queue"`
+	Description  string            `json:"description"`
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -146,8 +148,10 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	info := s.mgr.Create(engine.AddOptions{
 		URL: req.URL, Dir: req.Dir, Connections: req.Connections, Headers: req.Headers,
 		SpeedLimit: req.SpeedLimit, Start: start, OpenWhenDone: req.OpenWhenDone,
-		Category: strings.TrimSpace(req.Category),
-		FileName: engine.SanitizeName(req.FileName),
+		Category:    strings.TrimSpace(req.Category),
+		FileName:    engine.SanitizeName(req.FileName),
+		Queue:       strings.TrimSpace(req.Queue),
+		Description: strings.TrimSpace(req.Description),
 	})
 	s.Broadcast()
 	writeJSON(w, http.StatusCreated, info)

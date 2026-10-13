@@ -76,6 +76,8 @@ type Info struct {
 	Active       int         `json:"active"`
 	RangeOK      bool        `json:"range_ok"`
 	Category     string      `json:"category"`
+	Queue        string      `json:"queue"`
+	Description  string      `json:"description"`
 	SpeedLimit   int64       `json:"speed_limit"`
 	OpenWhenDone bool        `json:"open_when_done"`
 	Chunks       []ChunkInfo `json:"chunks"`

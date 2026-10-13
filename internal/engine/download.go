@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,8 @@ type Download struct {
 	Connections  int
 	SpeedLimit   int64
 	OpenWhenDone bool
+	Queue        string
+	Description  string
 
 	Total   int64
 	RangeOK bool
@@ -45,6 +48,7 @@ type Download struct {
 	cancel   context.CancelFunc
 	file     *os.File
 	cookies  []*http.Cookie
+	auth     func(host string) (string, string, bool)
 	onUpdate func(*Download)
 
 	lastDone int64
@@ -99,6 +103,13 @@ func (d *Download) SetSpeedLimit(bytesPerSecond int64) {
 func (d *Download) SetOpenWhenDone(v bool) {
 	d.mu.Lock()
 	d.OpenWhenDone = v
+	d.mu.Unlock()
+}
+
+// SetAuthLookup installs the per-host credential lookup used for Basic auth.
+func (d *Download) SetAuthLookup(fn func(host string) (string, string, bool)) {
+	d.mu.Lock()
+	d.auth = fn
 	d.mu.Unlock()
 }
 
@@ -339,6 +350,13 @@ func (d *Download) fetch(ctx context.Context, ch *Chunk) error {
 	if rangeOK {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	}
+	if d.auth != nil {
+		if u, perr := url.Parse(finalURL); perr == nil {
+			if user, pass, ok := d.auth(u.Hostname()); ok {
+				req.SetBasicAuth(user, pass)
+			}
+		}
+	}
 	if len(cookies) > 0 {
 		req.Header.Set("Cookie", cookieHeader(cookies))
 	}
@@ -463,6 +481,8 @@ type State struct {
 	Total        int64             `json:"total"`
 	RangeOK      bool              `json:"range_ok"`
 	CategoryName string            `json:"category_name,omitempty"`
+	Queue        string            `json:"queue,omitempty"`
+	Description  string            `json:"description,omitempty"`
 	Status       Status            `json:"status"`
 	Err          string            `json:"error,omitempty"`
 	Chunks       []*Chunk          `json:"chunks"`
@@ -488,6 +508,7 @@ func (d *Download) State() State {
 		ID: d.ID, URL: d.URL, FinalURL: d.FinalURL, FileName: d.FileName, Dir: d.Dir,
 		BaseDir: d.BaseDir, Headers: d.Headers, Connections: d.Connections, SpeedLimit: d.SpeedLimit,
 		OpenWhenDone: d.OpenWhenDone, CategoryName: d.CategoryName,
+		Queue: d.Queue, Description: d.Description,
 		Total: d.Total, RangeOK: d.RangeOK, Status: status, Err: d.Err,
 		Chunks: chunks, CreatedAt: d.CreatedAt, UpdatedAt: time.Now(),
 	}
@@ -510,6 +531,8 @@ func Restore(s State, client *http.Client) *Download {
 	d.RangeOK = s.RangeOK
 	d.OpenWhenDone = s.OpenWhenDone
 	d.CategoryName = s.CategoryName
+	d.Queue = s.Queue
+	d.Description = s.Description
 	d.Chunks = s.Chunks
 	d.Err = s.Err
 	d.CreatedAt = s.CreatedAt
@@ -575,7 +598,7 @@ func (d *Download) infoLocked() Info {
 		ID: d.ID, URL: d.URL, FinalURL: d.FinalURL, FileName: d.FileName, FilePath: path,
 		Dir: d.Dir, Status: d.Status, Error: d.Err, Total: d.Total, Done: done,
 		Progress: pct, Speed: d.speed, Connections: d.Connections, Active: active,
-		RangeOK: d.RangeOK, Category: d.category(), Chunks: chunks,
+		RangeOK: d.RangeOK, Category: d.category(), Queue: d.Queue, Description: d.Description, Chunks: chunks,
 		SpeedLimit: d.SpeedLimit, OpenWhenDone: d.OpenWhenDone,
 		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}

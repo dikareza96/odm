@@ -62,7 +62,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	mgr := engine.NewManager(settings, settingsPath, &http.Client{Timeout: 0})
+	mgr := engine.NewManager(settings, settingsPath)
 	mgr.SetStore(store)
 	if states, err := store.Load(); err == nil {
 		mgr.Restore(states)

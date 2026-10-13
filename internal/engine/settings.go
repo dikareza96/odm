@@ -7,15 +7,37 @@ import (
 	"strings"
 )
 
+// ProxyConfig describes an optional HTTP proxy.
+type ProxyConfig struct {
+	Mode string `json:"mode"` // "none" or "http"
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	User string `json:"user"`
+	Pass string `json:"pass"`
+}
+
+// Login is a per-site credential applied when a download targets that host.
+type Login struct {
+	Host string `json:"host"`
+	User string `json:"user"`
+	Pass string `json:"pass"`
+}
+
 // Settings are the user-facing options persisted between runs.
 type Settings struct {
-	Dir         string `json:"dir"`
-	Connections int    `json:"connections"`
-	Concurrent  int    `json:"concurrent"`
-	SpeedLimit  int64  `json:"speed_limit"`
-	Categories  bool   `json:"categories"`
-	Clipboard   bool   `json:"clipboard"`
+	Dir         string      `json:"dir"`
+	Connections int         `json:"connections"`
+	Concurrent  int         `json:"concurrent"`
+	SpeedLimit  int64       `json:"speed_limit"`
+	Categories  bool        `json:"categories"`
+	Clipboard   bool        `json:"clipboard"`
+	Proxy       ProxyConfig `json:"proxy"`
+	Logins      []Login     `json:"logins"`
+	Queues      []string    `json:"queues"`
 }
+
+// DefaultQueue is the queue used when none is specified.
+const DefaultQueue = "Main"
 
 // DefaultSettings returns settings for a fresh install.
 func DefaultSettings(dir string) Settings {
@@ -24,6 +46,7 @@ func DefaultSettings(dir string) Settings {
 		Connections: DefaultConnections,
 		Concurrent:  DefaultFileLimit,
 		Categories:  true,
+		Queues:      []string{DefaultQueue},
 	}
 }
 
@@ -43,6 +66,26 @@ func (s *Settings) normalize(fallbackDir string) {
 	if s.SpeedLimit < 0 {
 		s.SpeedLimit = 0
 	}
+	if s.Proxy.Mode != "http" {
+		s.Proxy.Mode = "none"
+	}
+	if s.Proxy.Mode == "http" && s.Proxy.Port == 0 {
+		s.Proxy.Port = 8080
+	}
+	seen := map[string]bool{}
+	queues := make([]string, 0, len(s.Queues)+1)
+	for _, q := range s.Queues {
+		q = strings.TrimSpace(q)
+		if q == "" || seen[q] {
+			continue
+		}
+		seen[q] = true
+		queues = append(queues, q)
+	}
+	if !seen[DefaultQueue] {
+		queues = append([]string{DefaultQueue}, queues...)
+	}
+	s.Queues = queues
 }
 
 // LoadSettings reads settings from path, falling back to defaults.

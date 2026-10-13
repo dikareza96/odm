@@ -27,6 +27,13 @@ func dialogConfirm(parent fyne.Window, title, msg string, fn func(bool)) {
 	dialog.NewConfirm(title, msg, fn, parent).Show()
 }
 
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 /* ---------- Add: "Download File Info" ---------- */
 
 func (a *application) openAddDialog() {
@@ -39,8 +46,11 @@ func (a *application) openAddDialog() {
 	folderEntry := widget.NewEntry()
 	folderEntry.SetText(settings.Dir)
 	nameEntry := widget.NewEntry()
+	descEntry := widget.NewEntry()
 	connEntry := widget.NewEntry()
 	connEntry.SetText(fmt.Sprint(settings.Connections))
+	queueSelect := widget.NewSelect(a.mgr.Queues(), nil)
+	queueSelect.SetSelected(engine.DefaultQueue)
 	sizeLabel := widget.NewLabel("Size: —")
 	typeLabel := widget.NewLabel("")
 
@@ -72,12 +82,24 @@ func (a *application) openAddDialog() {
 		})
 	}
 
+	browseButton := widget.NewButtonWithIcon("Browse…", theme.FolderOpenIcon(), func() {
+		dialog.NewFolderOpen(func(dir fyne.ListableURI, err error) {
+			if err != nil || dir == nil {
+				return
+			}
+			folderEntry.SetText(dir.Path())
+		}, a.win).Show()
+	})
+	folderRow := container.NewBorder(nil, nil, nil, browseButton, folderEntry)
+
 	form := widget.NewForm(
 		widget.NewFormItem("URL", urlEntry),
 		widget.NewFormItem("Category", catSelect),
-		widget.NewFormItem("Save folder", folderEntry),
+		widget.NewFormItem("Save folder", folderRow),
 		widget.NewFormItem("File name", nameEntry),
+		widget.NewFormItem("Description", descEntry),
 		widget.NewFormItem("Connections", connEntry),
+		widget.NewFormItem("Queue", queueSelect),
 	)
 	content := container.NewVBox(form, sizeLabel, typeLabel)
 
@@ -94,8 +116,10 @@ func (a *application) openAddDialog() {
 			URL:         url,
 			Dir:         strings.TrimSpace(folderEntry.Text),
 			FileName:    strings.TrimSpace(nameEntry.Text),
+			Description: strings.TrimSpace(descEntry.Text),
 			Connections: conns,
 			Category:    catSelect.Selected,
+			Queue:       queueSelect.Selected,
 			Start:       start,
 		})
 		dlg.Hide()
@@ -107,42 +131,152 @@ func (a *application) openAddDialog() {
 	laterBtn := widget.NewButtonWithIcon("Download Later", theme.ContentAddIcon(), func() { create(false) })
 	cancelBtn := widget.NewButton("Cancel", func() { dlg.Hide() })
 	dlg.SetButtons([]fyne.CanvasObject{laterBtn, cancelBtn, startBtn})
-	dlg.Resize(fyne.NewSize(620, 420))
+	dlg.Resize(fyne.NewSize(660, 520))
 	dlg.Show()
 }
 
-/* ---------- Options ---------- */
+/* ---------- Options (tabbed) ---------- */
 
 func (a *application) openOptionsDialog() {
 	settings := a.mgr.Settings()
 
+	// General
 	dirEntry := widget.NewEntry()
 	dirEntry.SetText(settings.Dir)
+	browse := widget.NewButtonWithIcon("Browse…", theme.FolderOpenIcon(), func() {
+		dialog.NewFolderOpen(func(u fyne.ListableURI, err error) {
+			if err != nil || u == nil {
+				return
+			}
+			dirEntry.SetText(u.Path())
+		}, a.win).Show()
+	})
+	dirRow := container.NewBorder(nil, nil, nil, browse, dirEntry)
+	catsCheck := widget.NewCheck("Put files in category subfolders", nil)
+	catsCheck.SetChecked(settings.Categories)
+	clipCheck := widget.NewCheck("Watch clipboard for downloadable URLs", nil)
+	clipCheck.SetChecked(settings.Clipboard)
+	generalTab := container.NewVBox(widget.NewForm(widget.NewFormItem("Default folder", dirRow)), catsCheck, clipCheck)
+
+	// Connection
 	connEntry := widget.NewEntry()
 	connEntry.SetText(fmt.Sprint(settings.Connections))
 	concEntry := widget.NewEntry()
 	concEntry.SetText(fmt.Sprint(settings.Concurrent))
 	limitEntry := widget.NewEntry()
 	limitEntry.SetText(fmt.Sprint(settings.SpeedLimit / 1024))
-	catsCheck := widget.NewCheck("Put files in category subfolders", nil)
-	catsCheck.SetChecked(settings.Categories)
-	clipCheck := widget.NewCheck("Watch clipboard for downloadable URLs", nil)
-	clipCheck.SetChecked(settings.Clipboard)
-
-	form := widget.NewForm(
-		widget.NewFormItem("Default folder", dirEntry),
+	connectionTab := container.NewVBox(widget.NewForm(
 		widget.NewFormItem("Connections per file", connEntry),
 		widget.NewFormItem("Simultaneous downloads", concEntry),
 		widget.NewFormItem("Global speed limit (KB/s, 0 = off)", limitEntry),
-	)
-	content := container.NewVBox(form, catsCheck, clipCheck)
+	))
 
-	dlg := dialog.NewCustomWithoutButtons("Options", content, a.win)
+	// Proxy
+	proxyCheck := widget.NewCheck("Use an HTTP proxy", nil)
+	proxyCheck.SetChecked(settings.Proxy.Mode == "http")
+	proxyHost := widget.NewEntry()
+	proxyHost.SetText(settings.Proxy.Host)
+	proxyPort := widget.NewEntry()
+	proxyPort.SetText(fmt.Sprint(settings.Proxy.Port))
+	proxyUser := widget.NewEntry()
+	proxyUser.SetText(settings.Proxy.User)
+	proxyPass := widget.NewEntry()
+	proxyPass.SetText(settings.Proxy.Pass)
+	proxyTab := container.NewVBox(proxyCheck, widget.NewForm(
+		widget.NewFormItem("Host", proxyHost),
+		widget.NewFormItem("Port", proxyPort),
+		widget.NewFormItem("User", proxyUser),
+		widget.NewFormItem("Password", proxyPass),
+	))
+
+	// Sites logins
+	logins := append([]engine.Login(nil), settings.Logins...)
+	loginsTable := widget.NewTable(
+		func() (int, int) { return len(logins), 3 },
+		func() fyne.CanvasObject { return widget.NewEntry() },
+		func(id widget.TableCellID, o fyne.CanvasObject) {
+			e := o.(*widget.Entry)
+			if id.Row < 0 || id.Row >= len(logins) {
+				e.SetText("")
+				return
+			}
+			switch id.Col {
+			case 0:
+				e.SetText(logins[id.Row].Host)
+			case 1:
+				e.SetText(logins[id.Row].User)
+			case 2:
+				e.SetText(logins[id.Row].Pass)
+			}
+			row, col := id.Row, id.Col
+			e.OnChanged = func(v string) {
+				if row >= len(logins) {
+					return
+				}
+				switch col {
+				case 0:
+					logins[row].Host = v
+				case 1:
+					logins[row].User = v
+				case 2:
+					logins[row].Pass = v
+				}
+			}
+		},
+	)
+	loginsTable.SetColumnWidth(0, 200)
+	loginsTable.SetColumnWidth(1, 140)
+	loginsTable.SetColumnWidth(2, 140)
+	selected := -1
+	loginsTable.OnSelected = func(id widget.TableCellID) { selected = id.Row }
+	addLogin := widget.NewButtonWithIcon("Add", theme.ContentAddIcon(), func() {
+		logins = append(logins, engine.Login{})
+		loginsTable.Refresh()
+	})
+	delLogin := widget.NewButtonWithIcon("Remove", theme.ContentRemoveIcon(), func() {
+		if selected >= 0 && selected < len(logins) {
+			logins = append(logins[:selected], logins[selected+1:]...)
+			selected = -1
+			loginsTable.Refresh()
+		}
+	})
+	loginsTab := container.NewBorder(
+		container.NewHBox(addLogin, delLogin),
+		nil, nil, nil,
+		loginsTable,
+	)
+
+	tabs := container.NewAppTabs(
+		container.NewTabItemWithIcon("General", theme.SettingsIcon(), generalTab),
+		container.NewTabItemWithIcon("Connection", theme.MediaPlayIcon(), connectionTab),
+		container.NewTabItemWithIcon("Proxy", theme.ComputerIcon(), proxyTab),
+		container.NewTabItemWithIcon("Sites Logins", theme.LoginIcon(), loginsTab),
+	)
+
+	dlg := dialog.NewCustomWithoutButtons("Options", tabs, a.win)
 	save := func() {
 		conns, conc, limit := settings.Connections, settings.Concurrent, settings.SpeedLimit/1024
 		fmt.Sscanf(connEntry.Text, "%d", &conns)
 		fmt.Sscanf(concEntry.Text, "%d", &conc)
 		fmt.Sscanf(limitEntry.Text, "%d", &limit)
+		port := 8080
+		fmt.Sscanf(proxyPort.Text, "%d", &port)
+		proxy := engine.ProxyConfig{Mode: "none"}
+		if proxyCheck.Checked {
+			proxy = engine.ProxyConfig{
+				Mode: "http",
+				Host: strings.TrimSpace(proxyHost.Text),
+				Port: port,
+				User: strings.TrimSpace(proxyUser.Text),
+				Pass: proxyPass.Text,
+			}
+		}
+		clean := make([]engine.Login, 0, len(logins))
+		for _, l := range logins {
+			if strings.TrimSpace(l.Host) != "" {
+				clean = append(clean, l)
+			}
+		}
 		a.mgr.UpdateSettings(engine.Settings{
 			Dir:         strings.TrimSpace(dirEntry.Text),
 			Connections: conns,
@@ -150,6 +284,9 @@ func (a *application) openOptionsDialog() {
 			SpeedLimit:  limit * 1024,
 			Categories:  catsCheck.Checked,
 			Clipboard:   clipCheck.Checked,
+			Proxy:       proxy,
+			Logins:      clean,
+			Queues:      settings.Queues,
 		})
 		dlg.Hide()
 		a.refresh()
@@ -158,7 +295,76 @@ func (a *application) openOptionsDialog() {
 	saveBtn := widget.NewButtonWithIcon("Save", theme.ConfirmIcon(), save)
 	saveBtn.Importance = widget.HighImportance
 	dlg.SetButtons([]fyne.CanvasObject{closeBtn, saveBtn})
-	dlg.Resize(fyne.NewSize(560, 380))
+	dlg.Resize(fyne.NewSize(620, 460))
+	dlg.Show()
+}
+
+/* ---------- Site Grabber ---------- */
+
+func (a *application) openGrabberDialog() {
+	settings := a.mgr.Settings()
+
+	urlEntry := widget.NewEntry()
+	urlEntry.SetPlaceHolder("https://site.example/downloads/")
+	depthEntry := widget.NewEntry()
+	depthEntry.SetText("1")
+	pagesEntry := widget.NewEntry()
+	pagesEntry.SetText("50")
+	filesEntry := widget.NewEntry()
+	filesEntry.SetText("100")
+	sameHost := widget.NewCheck("Stay on the same host", nil)
+	sameHost.SetChecked(true)
+	startNow := widget.NewCheck("Start downloads immediately", nil)
+	startNow.SetChecked(true)
+	info := widget.NewLabel("")
+
+	form := widget.NewForm(
+		widget.NewFormItem("Start page", urlEntry),
+		widget.NewFormItem("Depth", depthEntry),
+		widget.NewFormItem("Max pages", pagesEntry),
+		widget.NewFormItem("Max files", filesEntry),
+	)
+	content := container.NewVBox(form, sameHost, startNow, info)
+
+	dlg := dialog.NewCustomWithoutButtons("IDM Site Grabber", content, a.win)
+	start := func() {
+		depth, pages, files := 1, 50, 100
+		fmt.Sscanf(depthEntry.Text, "%d", &depth)
+		fmt.Sscanf(pagesEntry.Text, "%d", &pages)
+		fmt.Sscanf(filesEntry.Text, "%d", &files)
+		opts := engine.GrabberOptions{
+			URL:      strings.TrimSpace(urlEntry.Text),
+			Depth:    depth,
+			MaxPages: pages,
+			MaxFiles: files,
+			SameHost: sameHost.Checked,
+			Dir:      settings.Dir,
+			Start:    startNow.Checked,
+		}
+		if opts.URL == "" {
+			info.SetText("Enter a start page.")
+			return
+		}
+		info.SetText("Exploring…")
+		go func() {
+			res, err := a.mgr.Grab(context.Background(), opts, func(p, f int) {
+				fyne.Do(func() { info.SetText(fmt.Sprintf("Exploring… %d pages, %d files", p, f)) })
+			})
+			fyne.Do(func() {
+				if err != nil {
+					info.SetText("Failed: " + err.Error())
+					return
+				}
+				info.SetText(fmt.Sprintf("Done: %d pages explored, %d files queued.", res.Pages, len(res.Files)))
+				a.refresh()
+			})
+		}()
+	}
+	startBtn := widget.NewButtonWithIcon("Start", theme.MediaPlayIcon(), start)
+	startBtn.Importance = widget.HighImportance
+	closeBtn := widget.NewButton("Close", func() { dlg.Hide() })
+	dlg.SetButtons([]fyne.CanvasObject{closeBtn, startBtn})
+	dlg.Resize(fyne.NewSize(560, 420))
 	dlg.Show()
 }
 
@@ -174,6 +380,7 @@ type progressView struct {
 	eta        *widget.Label
 	resume     *widget.Label
 	bar        *widget.ProgressBar
+	strip      *chunkStrip
 	conns      *widget.Table
 	connRows   []engine.ChunkInfo
 	connMu     sync.Mutex
@@ -195,7 +402,7 @@ func (a *application) openProgressWindow(id string) {
 
 	v := &progressView{}
 	v.win = a.fyneApp.NewWindow("Download")
-	v.win.Resize(fyne.NewSize(720, 540))
+	v.win.Resize(fyne.NewSize(740, 560))
 
 	v.url = widget.NewLabel("")
 	v.status = widget.NewLabel("")
@@ -206,6 +413,7 @@ func (a *application) openProgressWindow(id string) {
 	v.resume = widget.NewLabel("")
 	v.bar = widget.NewProgressBar()
 	v.bar.TextFormatter = func() string { return fmt.Sprintf("%.0f%%", v.bar.Value*100) }
+	v.strip = newChunkStrip()
 
 	v.conns = widget.NewTable(
 		func() (int, int) {
@@ -235,7 +443,7 @@ func (a *application) openProgressWindow(id string) {
 	)
 	v.conns.SetColumnWidth(0, 50)
 	v.conns.SetColumnWidth(1, 200)
-	v.conns.SetColumnWidth(2, 380)
+	v.conns.SetColumnWidth(2, 400)
 
 	statusTab := container.NewBorder(
 		container.NewVBox(
@@ -249,6 +457,9 @@ func (a *application) openProgressWindow(id string) {
 				widget.NewFormItem("Resume capability", v.resume),
 			),
 			v.bar,
+			v.strip,
+			widget.NewLabelWithStyle("Start positions and download progress by connections",
+				fyne.TextAlignCenter, fyne.TextStyle{Italic: true}),
 		),
 		nil, nil, nil,
 		v.conns,
@@ -324,6 +535,7 @@ func (a *application) updateProgressWindow(id string) {
 	if d.Total > 0 {
 		v.bar.SetValue(d.Progress / 100)
 	}
+	v.strip.set(d.Chunks, d.Total)
 	if d.Status == engine.StatusDownloading || d.Status == engine.StatusQueued {
 		v.pauseBtn.SetText("Pause")
 	} else {
@@ -338,11 +550,4 @@ func (a *application) updateProgressWindow(id string) {
 	v.connRows = d.Chunks
 	v.connMu.Unlock()
 	v.conns.Refresh()
-}
-
-func dash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }

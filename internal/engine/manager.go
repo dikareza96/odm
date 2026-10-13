@@ -4,9 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,19 +35,35 @@ type Manager struct {
 }
 
 // NewManager builds a manager from persisted settings.
-func NewManager(settings Settings, settingsPath string, client *http.Client) *Manager {
+func NewManager(settings Settings, settingsPath string) *Manager {
 	settings.normalize(settings.Dir)
-	if client == nil {
-		client = &http.Client{Timeout: 0}
-	}
 	return &Manager{
 		downloads: map[string]*Download{},
 		running:   map[string]bool{},
-		client:    client,
+		client:    buildClient(settings),
 		settings:  settings,
 		setPath:   settingsPath,
 		limiter:   NewLimiter(settings.SpeedLimit),
 	}
+}
+
+// buildClient creates an HTTP client honouring the configured proxy.
+func buildClient(s Settings) *http.Client {
+	transport := &http.Transport{
+		MaxIdleConns:        64,
+		MaxIdleConnsPerHost: 16,
+		IdleConnTimeout:     30 * time.Second,
+		ForceAttemptHTTP2:   true,
+	}
+	if s.Proxy.Mode == "http" && strings.TrimSpace(s.Proxy.Host) != "" {
+		host := net.JoinHostPort(strings.TrimSpace(s.Proxy.Host), strconv.Itoa(s.Proxy.Port))
+		pu := &url.URL{Scheme: "http", Host: host}
+		if s.Proxy.User != "" {
+			pu.User = url.UserPassword(s.Proxy.User, s.Proxy.Pass)
+		}
+		transport.Proxy = http.ProxyURL(pu)
+	}
+	return &http.Client{Transport: transport}
 }
 
 // SetStore attaches persistence.
@@ -62,9 +83,13 @@ func (m *Manager) Settings() Settings {
 func (m *Manager) UpdateSettings(next Settings) Settings {
 	m.mu.Lock()
 	fallback := m.settings.Dir
+	proxyChanged := m.settings.Proxy != next.Proxy
 	next.normalize(fallback)
 	m.settings = next
 	path := m.setPath
+	if proxyChanged {
+		m.client = buildClient(next)
+	}
 	m.mu.Unlock()
 
 	m.limiter.SetRate(next.SpeedLimit)
@@ -75,6 +100,175 @@ func (m *Manager) UpdateSettings(next Settings) Settings {
 	return next
 }
 
+// credentials returns the stored Basic credentials for a host, if any.
+func (m *Manager) credentials(host string) (string, string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, l := range m.settings.Logins {
+		if strings.EqualFold(strings.TrimSpace(l.Host), strings.TrimSpace(host)) && l.User != "" {
+			return l.User, l.Pass, true
+		}
+	}
+	return "", "", false
+}
+
+/* ---------- queues ---------- */
+
+// Queues returns the known queue names.
+func (m *Manager) Queues() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.settings.Queues))
+	copy(out, m.settings.Queues)
+	return out
+}
+
+// AddQueue registers a new queue name.
+func (m *Manager) AddQueue(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	m.mu.Lock()
+	for _, q := range m.settings.Queues {
+		if strings.EqualFold(q, name) {
+			m.mu.Unlock()
+			return false
+		}
+	}
+	m.settings.Queues = append(m.settings.Queues, name)
+	next := m.settings
+	path := m.setPath
+	m.mu.Unlock()
+	if path != "" {
+		_ = SaveSettings(path, next)
+	}
+	m.fire()
+	return true
+}
+
+// MoveToQueue reassigns a download to another queue.
+func (m *Manager) MoveToQueue(id, queue string) bool {
+	d := m.get(id)
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	d.Queue = queue
+	d.mu.Unlock()
+	m.changed(d)
+	return true
+}
+
+// StartQueue resumes every finished-able download belonging to a queue.
+func (m *Manager) StartQueue(name string) {
+	m.mu.Lock()
+	ids := append([]string(nil), m.order...)
+	m.mu.Unlock()
+	for _, id := range ids {
+		d := m.get(id)
+		if d == nil {
+			continue
+		}
+		d.mu.Lock()
+		match := queueMatches(d.Queue, name)
+		d.mu.Unlock()
+		if match {
+			m.resume(d)
+		}
+	}
+}
+
+// StopQueue pauses the active downloads of a queue.
+func (m *Manager) StopQueue(name string) {
+	m.mu.Lock()
+	ids := append([]string(nil), m.order...)
+	m.mu.Unlock()
+	for _, id := range ids {
+		d := m.get(id)
+		if d == nil {
+			continue
+		}
+		d.mu.Lock()
+		match := queueMatches(d.Queue, name)
+		d.mu.Unlock()
+		if match {
+			m.Pause(id)
+		}
+	}
+}
+
+func queueMatches(downloadQueue, want string) bool {
+	if want == "" || want == "*" {
+		return true
+	}
+	q := downloadQueue
+	if q == "" {
+		q = DefaultQueue
+	}
+	return strings.EqualFold(q, want)
+}
+
+/* ---------- export / import ---------- */
+
+// Export serialises the download list as JSON.
+func (m *Manager) Export() ([]byte, error) {
+	m.mu.Lock()
+	ids := append([]string(nil), m.order...)
+	m.mu.Unlock()
+	states := make([]State, 0, len(ids))
+	for _, id := range ids {
+		if d := m.get(id); d != nil {
+			states = append(states, d.State())
+		}
+	}
+	return json.MarshalIndent(states, "", "  ")
+}
+
+// Import merges a previously exported list, returning how many were added.
+func (m *Manager) Import(data []byte) (int, error) {
+	var states []State
+	if err := json.Unmarshal(data, &states); err != nil {
+		return 0, err
+	}
+	added := 0
+	for _, st := range states {
+		if st.URL == "" {
+			continue
+		}
+		if st.ID == "" {
+			st.ID = newID()
+		}
+		m.mu.Lock()
+		_, exists := m.downloads[st.ID]
+		stt := m.settings
+		m.mu.Unlock()
+		if exists {
+			continue
+		}
+		st.Status = StatusPaused
+		if st.Queue == "" {
+			st.Queue = DefaultQueue
+		}
+		d := Restore(st, m.client)
+		d.Categories = stt.Categories
+		d.SetLimiter(m.limiter)
+		d.SetAuthLookup(m.credentials)
+		d.SetOnUpdate(m.changed)
+
+		m.mu.Lock()
+		m.downloads[d.ID] = d
+		m.order = append(m.order, d.ID)
+		m.mu.Unlock()
+		m.changed(d)
+		added++
+	}
+	m.pump()
+	return added, nil
+}
+
+/* ---------- lifecycle ---------- */
+
 // Restore loads persisted downloads into the manager.
 func (m *Manager) Restore(states []State) {
 	m.mu.Lock()
@@ -83,14 +277,14 @@ func (m *Manager) Restore(states []State) {
 		d := Restore(st, m.client)
 		d.Categories = m.settings.Categories
 		d.SetLimiter(m.limiter)
+		d.SetAuthLookup(m.credentials)
 		d.SetOnUpdate(m.changed)
 		m.downloads[d.ID] = d
 		m.order = append(m.order, d.ID)
 	}
 }
 
-// Begin binds the run context and starts any queued downloads. Call it before
-// Add so the pump has a context to launch work with.
+// Begin binds the run context and starts any queued downloads.
 func (m *Manager) Begin(ctx context.Context) {
 	m.mu.Lock()
 	m.ctx = ctx
@@ -143,6 +337,8 @@ type AddOptions struct {
 	OpenWhenDone bool
 	Category     string
 	FileName     string
+	Queue        string
+	Description  string
 }
 
 // Create queues a download from opts and returns its projection.
@@ -159,12 +355,19 @@ func (m *Manager) Create(o AddOptions) Info {
 	if conns <= 0 {
 		conns = st.Connections
 	}
+	queue := strings.TrimSpace(o.Queue)
+	if queue == "" {
+		queue = DefaultQueue
+	}
 	d := New(newID(), o.URL, dir, conns, o.Headers, o.SpeedLimit, m.client)
 	d.Categories = st.Categories
 	d.CategoryName = o.Category
 	d.FileName = o.FileName
 	d.OpenWhenDone = o.OpenWhenDone
+	d.Queue = queue
+	d.Description = o.Description
 	d.SetLimiter(m.limiter)
+	d.SetAuthLookup(m.credentials)
 	if o.SpeedLimit > 0 {
 		d.SetSpeedLimit(o.SpeedLimit)
 	}
@@ -184,9 +387,9 @@ func (m *Manager) Create(o AddOptions) Info {
 	return d.Info()
 }
 
-// Probe inspects a URL without creating a download (used by the Add dialog).
+// Probe inspects a URL without creating a download.
 func (m *Manager) Probe(ctx context.Context, rawURL string, headers map[string]string) (*Probe, error) {
-	return Inspect(ctx, m.client, rawURL, headers)
+	return Inspect(ctx, m.client, strings.TrimSpace(rawURL), headers)
 }
 
 // SetSpeedLimit applies a per-download cap in bytes/sec.
@@ -314,8 +517,7 @@ func (m *Manager) ClearCompleted() int {
 	return n
 }
 
-// Remove stops the download and drops its state. When deleteFile is true the
-// partial or finished file is deleted from disk too.
+// Remove stops the download and drops its state.
 func (m *Manager) Remove(id string) bool { return m.RemoveWithFile(id, false) }
 
 // RemoveWithFile stops the download, deletes its state and optionally its file.

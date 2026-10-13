@@ -1,12 +1,13 @@
 //go:build windows
 
-// Package ui implements the ODM desktop interface with Fyne: an icon toolbar,
-// a category tree, a sortable report table and dialogs, driving the engine
-// in-process (no web server, no embedded browser).
+// Package ui implements the ODM desktop interface with Fyne: a menu bar, an
+// icon toolbar, a category/queue tree, a sortable report table and dialogs,
+// driving the engine in-process (no web server, no embedded browser).
 package ui
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -32,7 +34,7 @@ func Run(mgr *engine.Manager) error {
 	a.fyneApp = app.NewWithID("com.ochi.odm")
 	a.fyneApp.Settings().SetTheme(newTheme())
 	a.win = a.fyneApp.NewWindow("Ochi Download Manager")
-	a.win.Resize(fyne.NewSize(1040, 640))
+	a.win.Resize(fyne.NewSize(1080, 660))
 	a.win.SetIcon(theme.DownloadIcon())
 
 	a.build()
@@ -61,6 +63,7 @@ type application struct {
 	total       int
 	unfinished  int
 	finished    int
+	queues      []string
 	filter      struct {
 		kind  string
 		value string
@@ -92,10 +95,11 @@ type headerButton struct {
 	col int
 }
 
-var columnTitles = []string{"File Name", "Size", "Status", "Time left", "Transfer rate", "Last Try…", "Description"}
+var columnTitles = []string{"Q", "File Name", "Size", "Status", "Time left", "Transfer rate", "Last Try…", "Description"}
 
 const (
-	colName = iota
+	colQueue = iota
+	colName
 	colSize
 	colStatus
 	colETA
@@ -114,6 +118,10 @@ func (a *application) build() {
 			newToolButton(theme.ContentRemoveIcon(), "Delete", a.deleteSelected),
 			newToolButton(theme.ConfirmIcon(), "Del Completed", func() { a.mgr.ClearCompleted(); a.refresh() }),
 			newToolButton(theme.SettingsIcon(), "Options", a.openOptionsDialog),
+			widget.NewSeparator(),
+			newToolButton(theme.MediaPlayIcon(), "Start Queue", func() { a.startQueue() }),
+			newToolButton(theme.MediaStopIcon(), "Stop Queue", func() { a.stopQueue() }),
+			widget.NewSeparator(),
 			newToolButton(theme.InfoIcon(), "Progress", func() {
 				if d, ok := a.current(); ok {
 					a.openProgressWindow(d.ID)
@@ -157,7 +165,7 @@ func (a *application) build() {
 		hb.SetText(a.headerText(id.Col))
 		hb.OnTapped = func() { a.sortBy(hb.col) }
 	}
-	for i, w := range []float32{250, 90, 130, 100, 120, 140, 260} {
+	for i, w := range []float32{50, 240, 90, 120, 95, 115, 130, 250} {
 		base.SetColumnWidth(i, w)
 	}
 	a.table = &downloadTable{Table: base, app: a}
@@ -184,12 +192,10 @@ func (a *application) build() {
 			lbl.SetText(a.treeLabel(uid))
 		},
 	)
-	a.tree.OnSelected = func(uid widget.TreeNodeID) {
-		a.selectCategory(string(uid))
-	}
+	a.tree.OnSelected = func(uid widget.TreeNodeID) { a.selectNode(string(uid)) }
 	a.tree.OpenAllBranches()
 
-	hideBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() { a.toggleSidebar() })
+	hideBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), a.toggleSidebar)
 	hideBtn.Importance = widget.LowImportance
 	catHeader := container.NewBorder(nil, nil,
 		container.NewPadded(widget.NewLabelWithStyle("Categories", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})),
@@ -202,7 +208,97 @@ func (a *application) build() {
 
 	a.status = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{})
 	a.win.SetContent(container.NewBorder(top, container.NewPadded(a.status), nil, nil, a.split))
+	a.win.SetMainMenu(a.buildMenu())
 }
+
+/* ---------- menu bar ---------- */
+
+func (a *application) buildMenu() *fyne.MainMenu {
+	sep := &fyne.MenuItem{IsSeparator: true}
+
+	tasks := fyne.NewMenu("Tasks",
+		fyne.NewMenuItem("Add new download…", a.openAddDialog),
+		fyne.NewMenuItem("Grab site…", a.openGrabberDialog),
+		sep,
+		fyne.NewMenuItem("Export download list…", a.exportList),
+		fyne.NewMenuItem("Import download list…", a.importList),
+		&fyne.MenuItem{IsSeparator: true},
+		fyne.NewMenuItem("Exit", func() { a.fyneApp.Quit() }),
+	)
+	downloads := fyne.NewMenu("Downloads",
+		fyne.NewMenuItem("Pause all", func() { a.mgr.PauseAll(); a.refresh() }),
+		fyne.NewMenuItem("Stop all", func() { a.mgr.PauseAll(); a.refresh() }),
+		fyne.NewMenuItem("Clear completed", func() { a.mgr.ClearCompleted(); a.refresh() }),
+		&fyne.MenuItem{IsSeparator: true},
+		fyne.NewMenuItem("Start queue", a.startQueue),
+		fyne.NewMenuItem("Stop queue", a.stopQueue),
+		fyne.NewMenuItem("New queue…", a.openNewQueueDialog),
+		&fyne.MenuItem{IsSeparator: true},
+		fyne.NewMenuItem("Options…", a.openOptionsDialog),
+	)
+	view := fyne.NewMenu("View",
+		fyne.NewMenuItem("Hide categories", a.toggleSidebar),
+		fyne.NewMenuItem("Sort by name", func() { a.sortBy(colName) }),
+		fyne.NewMenuItem("Sort by size", func() { a.sortBy(colSize) }),
+		fyne.NewMenuItem("Sort by status", func() { a.sortBy(colStatus) }),
+		fyne.NewMenuItem("Sort by time left", func() { a.sortBy(colETA) }),
+		fyne.NewMenuItem("Sort by transfer rate", func() { a.sortBy(colRate) }),
+		fyne.NewMenuItem("Sort by description", func() { a.sortBy(colDescription) }),
+	)
+	help := fyne.NewMenu("Help",
+		fyne.NewMenuItem("About ODM", a.showAbout),
+	)
+	return fyne.NewMainMenu(tasks, downloads, view, help)
+}
+
+func (a *application) showAbout() {
+	dialog.ShowInformation("About",
+		"Ochi Download Manager (ODM)\n\nA segmented, resumable download manager.\nBuilt with Go and Fyne.",
+		a.win)
+}
+
+func (a *application) exportList() {
+	data, err := a.mgr.Export()
+	if err != nil {
+		dialog.ShowError(err, a.win)
+		return
+	}
+	d := dialog.NewFileSave(func(w fyne.URIWriteCloser, err error) {
+		if err != nil || w == nil {
+			return
+		}
+		defer w.Close()
+		if _, err := w.Write(data); err != nil {
+			dialog.ShowError(err, a.win)
+		}
+	}, a.win)
+	d.SetFileName("odm-downloads.json")
+	d.Show()
+}
+
+func (a *application) importList() {
+	d := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+		if err != nil || r == nil {
+			return
+		}
+		defer r.Close()
+		data, err := io.ReadAll(r)
+		if err != nil {
+			dialog.ShowError(err, a.win)
+			return
+		}
+		n, err := a.mgr.Import(data)
+		if err != nil {
+			dialog.ShowError(err, a.win)
+			return
+		}
+		a.refresh()
+		dialog.ShowInformation("Import", fmt.Sprintf("Imported %d download(s).", n), a.win)
+	}, a.win)
+	d.Show()
+}
+
+/* ---------- sidebar ---------- */
 
 func (a *application) toggleSidebar() {
 	if a.split.Offset > 0.001 {
@@ -212,6 +308,114 @@ func (a *application) toggleSidebar() {
 	}
 	a.split.Refresh()
 }
+
+func (a *application) treeChildren(uid widget.TreeNodeID) []widget.TreeNodeID {
+	s := string(uid)
+	switch {
+	case s == "":
+		return []widget.TreeNodeID{"all", "unfinished", "finished", "queues"}
+	case s == "all":
+		out := make([]widget.TreeNodeID, 0, len(engine.Categories()))
+		for _, c := range engine.Categories() {
+			out = append(out, widget.TreeNodeID("cat:"+c))
+		}
+		return out
+	case s == "queues":
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		out := make([]widget.TreeNodeID, 0, len(a.queues))
+		for _, q := range a.queues {
+			out = append(out, widget.TreeNodeID("queue:"+q))
+		}
+		return out
+	}
+	return nil
+}
+
+func (a *application) treeIsBranch(uid widget.TreeNodeID) bool {
+	s := string(uid)
+	return s == "all" || s == "queues" || strings.HasPrefix(s, "cat:")
+}
+
+func (a *application) treeLabel(uid widget.TreeNodeID) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := string(uid)
+	switch {
+	case s == "all":
+		return fmt.Sprintf("All Downloads (%d)", a.total)
+	case strings.HasPrefix(s, "cat:"):
+		name := strings.TrimPrefix(s, "cat:")
+		return fmt.Sprintf("%s (%d)", name, a.counts[name])
+	case s == "unfinished":
+		return fmt.Sprintf("Unfinished (%d)", a.unfinished)
+	case s == "finished":
+		return fmt.Sprintf("Finished (%d)", a.finished)
+	case s == "queues":
+		return "Queues"
+	case strings.HasPrefix(s, "queue:"):
+		return strings.TrimPrefix(s, "queue:")
+	}
+	return s
+}
+
+func (a *application) selectNode(uid string) {
+	a.mu.Lock()
+	switch {
+	case strings.HasPrefix(uid, "cat:"):
+		a.filter.kind, a.filter.value = "category", strings.TrimPrefix(uid, "cat:")
+	case strings.HasPrefix(uid, "queue:"):
+		a.filter.kind, a.filter.value = "queue", strings.TrimPrefix(uid, "queue:")
+	case uid == "unfinished":
+		a.filter.kind, a.filter.value = "unfinished", ""
+	case uid == "finished":
+		a.filter.kind, a.filter.value = "finished", ""
+	default:
+		a.filter.kind, a.filter.value = "all", ""
+	}
+	a.mu.Unlock()
+	a.refresh()
+}
+
+func (a *application) currentQueueFilter() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.filter.kind == "queue" {
+		return a.filter.value
+	}
+	return "*"
+}
+
+/* ---------- queues ---------- */
+
+func (a *application) startQueue() {
+	a.mgr.StartQueue(a.currentQueueFilter())
+	a.refresh()
+}
+
+func (a *application) stopQueue() {
+	a.mgr.StopQueue(a.currentQueueFilter())
+	a.refresh()
+}
+
+func (a *application) openNewQueueDialog() {
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder("Queue name")
+	d := dialog.NewCustomConfirm("New queue", "Create", "Cancel",
+		container.NewVBox(widget.NewLabel("Enter a name for the new queue:"), entry),
+		func(ok bool) {
+			if !ok || strings.TrimSpace(entry.Text) == "" {
+				return
+			}
+			if !a.mgr.AddQueue(entry.Text) {
+				dialog.ShowInformation("Queue", "That queue already exists.", a.win)
+			}
+			a.refresh()
+		}, a.win)
+	d.Show()
+}
+
+/* ---------- table ---------- */
 
 func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	box := o.(*fyne.Container)
@@ -236,6 +440,8 @@ func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	}
 
 	switch id.Col {
+	case colQueue:
+		lbl.SetText(d.Queue)
 	case colName:
 		lbl.SetText(d.FileName)
 	case colSize:
@@ -253,13 +459,13 @@ func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	case colRate:
 		lbl.SetText(rateText(d))
 	case colLastTry:
-		if d.Error != "" {
-			lbl.SetText(d.Error)
-		} else {
-			lbl.SetText(d.UpdatedAt.Format("15:04:05"))
-		}
+		lbl.SetText(d.UpdatedAt.Format("15:04:05"))
 	case colDescription:
-		lbl.SetText(d.URL)
+		if d.Description != "" {
+			lbl.SetText(d.Description)
+		} else {
+			lbl.SetText(d.URL)
+		}
 	}
 }
 
@@ -291,61 +497,6 @@ func (a *application) sortBy(col int) {
 	a.refresh()
 }
 
-/* ---------- category tree ---------- */
-
-func (a *application) treeChildren(uid widget.TreeNodeID) []widget.TreeNodeID {
-	switch {
-	case uid == "":
-		return []widget.TreeNodeID{"all", "unfinished", "finished"}
-	case uid == "all":
-		out := make([]widget.TreeNodeID, 0, len(engine.Categories()))
-		for _, c := range engine.Categories() {
-			out = append(out, widget.TreeNodeID("cat:"+c))
-		}
-		return out
-	}
-	return nil
-}
-
-func (a *application) treeIsBranch(uid widget.TreeNodeID) bool {
-	return uid == "all" || strings.HasPrefix(string(uid), "cat:")
-}
-
-func (a *application) treeLabel(uid widget.TreeNodeID) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	s := string(uid)
-	switch {
-	case s == "all":
-		return fmt.Sprintf("All Downloads (%d)", a.total)
-	case strings.HasPrefix(s, "cat:"):
-		name := strings.TrimPrefix(s, "cat:")
-		return fmt.Sprintf("%s (%d)", name, a.counts[name])
-	case s == "unfinished":
-		return fmt.Sprintf("Unfinished (%d)", a.unfinished)
-	case s == "finished":
-		return fmt.Sprintf("Finished (%d)", a.finished)
-	}
-	return s
-}
-
-func (a *application) selectCategory(uid string) {
-	a.mu.Lock()
-	switch {
-	case strings.HasPrefix(uid, "cat:"):
-		a.filter.kind = "category"
-		a.filter.value = strings.TrimPrefix(uid, "cat:")
-	case uid == "unfinished":
-		a.filter.kind, a.filter.value = "unfinished", ""
-	case uid == "finished":
-		a.filter.kind, a.filter.value = "finished", ""
-	default:
-		a.filter.kind, a.filter.value = "all", ""
-	}
-	a.mu.Unlock()
-	a.refresh()
-}
-
 /* ---------- refresh ---------- */
 
 func (a *application) loop() {
@@ -363,6 +514,7 @@ func (a *application) refresh() {
 	a.mu.Unlock()
 
 	all := a.mgr.List()
+	queues := a.mgr.Queues()
 	filtered := make([]engine.Info, 0, len(all))
 	counts := map[string]int{}
 	unfinished, finished := 0, 0
@@ -384,6 +536,7 @@ func (a *application) refresh() {
 	a.mu.Lock()
 	a.items = filtered
 	a.counts = counts
+	a.queues = queues
 	a.total = len(all)
 	a.unfinished = unfinished
 	a.finished = finished
@@ -431,6 +584,8 @@ func sortSlice(items []engine.Info, col int, asc bool) {
 
 func compareInfo(x, y engine.Info, col int) bool {
 	switch col {
+	case colQueue:
+		return strings.ToLower(x.Queue) < strings.ToLower(y.Queue)
 	case colName:
 		return strings.ToLower(x.FileName) < strings.ToLower(y.FileName)
 	case colSize:
@@ -444,7 +599,7 @@ func compareInfo(x, y engine.Info, col int) bool {
 	case colLastTry:
 		return x.UpdatedAt.Before(y.UpdatedAt)
 	case colDescription:
-		return strings.ToLower(x.URL) < strings.ToLower(y.URL)
+		return strings.ToLower(x.Description+x.URL) < strings.ToLower(y.Description+y.URL)
 	}
 	return false
 }
@@ -457,6 +612,12 @@ func matchesFilter(d engine.Info, kind, value string) bool {
 		return d.Status == engine.StatusComplete
 	case "category":
 		return d.Category == value
+	case "queue":
+		q := d.Queue
+		if q == "" {
+			q = engine.DefaultQueue
+		}
+		return strings.EqualFold(q, value)
 	default:
 		return true
 	}
@@ -506,11 +667,31 @@ func (a *application) showRowMenu(pos fyne.Position) {
 			}
 			a.refresh()
 		}),
+	)
+	move := fyne.NewMenuItem("Move to queue", nil)
+	move.ChildMenu = a.queueSubmenu(d.ID)
+	items = append(items, move)
+	items = append(items,
 		fyne.NewMenuItem("Remove from list", func() { a.removeSelected(false) }),
 		fyne.NewMenuItem("Remove + delete file", func() { a.removeSelected(true) }),
 	)
 	pop := widget.NewPopUpMenu(fyne.NewMenu("", items...), a.win.Canvas())
 	pop.ShowAtPosition(pos)
+}
+
+func (a *application) queueSubmenu(id string) *fyne.Menu {
+	out := []*fyne.MenuItem{}
+	for _, q := range a.mgr.Queues() {
+		q := q
+		out = append(out, fyne.NewMenuItem(q, func() {
+			a.mgr.MoveToQueue(id, q)
+			a.refresh()
+		}))
+	}
+	if len(out) == 0 {
+		out = append(out, &fyne.MenuItem{Label: "(no queues)", Disabled: true})
+	}
+	return fyne.NewMenu("", out...)
 }
 
 func (a *application) resumeSelected() {

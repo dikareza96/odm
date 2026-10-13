@@ -4,11 +4,14 @@ package ui
 
 import (
 	"image/color"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"odm/internal/engine"
 )
 
 // toolButton is an icon-above-label toolbar button with a hover highlight,
@@ -99,3 +102,105 @@ func (r *toolButtonRenderer) Refresh() {
 func (r *toolButtonRenderer) Objects() []fyne.CanvasObject { return r.objects }
 
 func (r *toolButtonRenderer) Destroy() {}
+
+// chunkStrip draws one bar per connection, positioned and sized in proportion
+// to its byte range ("start positions and download progress by connections").
+type chunkStrip struct {
+	widget.BaseWidget
+	mu     sync.Mutex
+	chunks []engine.ChunkInfo
+	total  int64
+}
+
+func newChunkStrip() *chunkStrip {
+	s := &chunkStrip{}
+	s.ExtendBaseWidget(s)
+	return s
+}
+
+func (s *chunkStrip) set(chunks []engine.ChunkInfo, total int64) {
+	s.mu.Lock()
+	s.chunks = chunks
+	s.total = total
+	s.mu.Unlock()
+	s.Refresh()
+}
+
+func (s *chunkStrip) CreateRenderer() fyne.WidgetRenderer {
+	r := &stripRenderer{strip: s}
+	r.rebuild()
+	return r
+}
+
+type stripRenderer struct {
+	strip   *chunkStrip
+	objects []fyne.CanvasObject
+}
+
+func (r *stripRenderer) rebuild() {
+	r.strip.mu.Lock()
+	n := len(r.strip.chunks)
+	r.strip.mu.Unlock()
+	if n < 1 {
+		n = 1
+	}
+	r.objects = make([]fyne.CanvasObject, 0, n*2)
+	for i := 0; i < n; i++ {
+		bg := canvas.NewRectangle(odmPalette.scrollTrack)
+		bg.CornerRadius = 2
+		fill := canvas.NewRectangle(odmPalette.accent)
+		fill.CornerRadius = 2
+		r.objects = append(r.objects, bg, fill)
+	}
+}
+
+func (r *stripRenderer) Layout(size fyne.Size) {
+	r.strip.mu.Lock()
+	chunks := append([]engine.ChunkInfo(nil), r.strip.chunks...)
+	total := r.strip.total
+	r.strip.mu.Unlock()
+	if total <= 0 {
+		total = 1
+	}
+	for i, c := range chunks {
+		if i*2+1 >= len(r.objects) {
+			break
+		}
+		bg := r.objects[i*2].(*canvas.Rectangle)
+		fill := r.objects[i*2+1].(*canvas.Rectangle)
+		x := size.Width * float32(float64(c.Start)/float64(total))
+		w := size.Width * float32(float64(c.End-c.Start+1)/float64(total))
+		if w < 1 {
+			w = 1
+		}
+		bg.Move(fyne.NewPos(x, 0))
+		bg.Resize(fyne.NewSize(w, size.Height))
+
+		frac := 0.0
+		if span := float64(c.End - c.Start + 1); span > 0 {
+			frac = float64(c.Done) / span
+		}
+		if frac >= 1 {
+			fill.FillColor = odmPalette.success
+		} else {
+			fill.FillColor = odmPalette.accent
+		}
+		fill.Move(fyne.NewPos(x, 0))
+		fill.Resize(fyne.NewSize(w*float32(frac), size.Height))
+	}
+}
+
+func (r *stripRenderer) MinSize() fyne.Size { return fyne.NewSize(200, 14) }
+
+func (r *stripRenderer) Refresh() {
+	r.strip.mu.Lock()
+	need := len(r.strip.chunks)
+	r.strip.mu.Unlock()
+	if need*2 != len(r.objects) {
+		r.rebuild()
+	}
+}
+
+func (r *stripRenderer) Objects() []fyne.CanvasObject { return r.objects }
+
+func (r *stripRenderer) Destroy() {}

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -57,12 +58,12 @@ func TestLoadSaveSettings(t *testing.T) {
 		t.Fatalf("defaults wrong: %+v", def)
 	}
 
-	want := Settings{Dir: "/downloads", Connections: 12, Concurrent: 5, SpeedLimit: 1048576, Categories: false}
+	want := Settings{Dir: "/downloads", Connections: 12, Concurrent: 5, SpeedLimit: 1048576, Categories: false, Proxy: ProxyConfig{Mode: "none"}, Queues: []string{DefaultQueue}}
 	if err := SaveSettings(path, want); err != nil {
 		t.Fatal(err)
 	}
 	got := LoadSettings(path, "/fallback")
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round trip = %+v, want %+v", got, want)
 	}
 }
