@@ -184,10 +184,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		}
 		opts.Stream = &engine.StreamJob{Kind: k, Manifest: req.URL}
 	}
-	// The New Download window probes the URL as one file, which is wrong
-	// for a playlist, so streams are added directly with the best quality
-	// until there is a window to choose one.
-	if req.Prompt && opts.Stream == nil && s.OnPrompt != nil && !s.mgr.Settings().NoStartDialog && s.OnPrompt(opts) {
+	if req.Prompt && s.OnPrompt != nil && !s.mgr.Settings().NoStartDialog && s.OnPrompt(opts) {
 		// The person decides in the window (it also handles duplicates).
 		writeJSON(w, http.StatusAccepted, map[string]bool{"prompted": true})
 		return

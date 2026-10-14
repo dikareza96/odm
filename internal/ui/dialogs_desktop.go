@@ -4,6 +4,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image/color"
 	"net/url"
@@ -25,6 +26,7 @@ import (
 	"odm/internal/autostart"
 	"odm/internal/browserreg"
 	"odm/internal/engine"
+	"odm/internal/media"
 	"odm/internal/osutil"
 	"odm/internal/update"
 	"odm/internal/version"
@@ -48,7 +50,8 @@ func dash(s string) string {
 
 func (a *application) openAddDialog() {
 	var dlg *dialog.CustomDialog
-	content, buttons := a.newAddForm(a.win, engine.AddOptions{}, func() { dlg.Hide() })
+	content, buttons := a.newAddForm(a.win, engine.AddOptions{}, func() { dlg.Hide() },
+		func() { dlg.Resize(fyne.NewSize(620, 1)) })
 	dlg = dialog.NewCustomWithoutButtons("New Download", content, a.win)
 	dlg.SetButtons(buttons)
 	dlg.Resize(fyne.NewSize(620, 1)) // height clamps to content: no empty band above the buttons
@@ -60,7 +63,13 @@ func (a *application) openAddDialog() {
 // a dialog on the main window) works while ODM sits hidden in the tray.
 func (a *application) openAddWindow(pre engine.AddOptions) {
 	w := a.fyneApp.NewWindow("New Download")
-	content, buttons := a.newAddForm(w, pre, w.Close)
+	content, buttons := a.newAddForm(w, pre, w.Close, func() {
+		width := w.Canvas().Size().Width // keep a width the person chose
+		if width < 640 {
+			width = 640
+		}
+		w.Resize(fyne.NewSize(width, 1))
+	})
 	w.SetContent(container.New(layout.NewCustomPaddedLayout(8, 10, 10, 10),
 		container.NewBorder(nil, container.NewHBox(layout.NewSpacer(), container.NewHBox(buttons...)), nil, nil, content)))
 	w.Resize(fyne.NewSize(640, 1))
@@ -72,7 +81,10 @@ func (a *application) openAddWindow(pre engine.AddOptions) {
 // pre.Headers (cookies, referrer, user agent from the browser) are used for
 // the size probe and kept for the download, since many servers refuse a
 // request without them. done closes whatever hosts the form.
-func (a *application) newAddForm(parent fyne.Window, pre engine.AddOptions, done func()) (fyne.CanvasObject, []fyne.CanvasObject) {
+//
+// relayout, when set, resizes the host after rows are added: a dialog does
+// not grow with its content on its own.
+func (a *application) newAddForm(parent fyne.Window, pre engine.AddOptions, done, relayout func()) (fyne.CanvasObject, []fyne.CanvasObject) {
 	settings := a.mgr.Settings()
 
 	urlEntry := widget.NewEntry()
@@ -99,19 +111,172 @@ func (a *application) newAddForm(parent fyne.Window, pre engine.AddOptions, done
 	infoLabel := widget.NewLabel("—")
 	infoLabel.Truncation = fyne.TextTruncateEllipsis
 
+	// Quality and Audio rows, added to the form the first time the address
+	// turns out to be an HLS/DASH playlist. All of the stream state below
+	// belongs to the address streamFor and is reset whenever the address
+	// changes, so Start never applies one playlist's choice to another.
+	//   - stream: what the playlist offers;
+	//   - streamKind: the playlist format, kept when reading it failed for
+	//     now (timeout, server error) so Start still queues it and ODM
+	//     picks the best quality when the download runs;
+	//   - streamErr: why it can never be downloaded (live, DRM), so Start
+	//     refuses instead of queueing something that will fail.
+	var (
+		stream     *engine.StreamChoices
+		streamKind media.Kind
+		streamErr  error
+		streamFor  string
+		streamRows bool
+		streamCat  string // the category before it was set to Video for a stream
+	)
+	qualitySelect := widget.NewSelect(nil, nil)
+	audioSelect := widget.NewSelect(nil, nil)
+	fillAudio := func(q int) {
+		audioSelect.Options = nil
+		if stream != nil && q >= 0 && q < len(stream.Qualities) {
+			for _, au := range stream.Qualities[q].Audios {
+				audioSelect.Options = append(audioSelect.Options, au.Label)
+			}
+		}
+		if len(audioSelect.Options) == 0 {
+			audioSelect.Options = []string{"In the video"}
+		}
+		audioSelect.SetSelectedIndex(0)
+		if len(audioSelect.Options) > 1 {
+			audioSelect.Enable()
+		} else {
+			audioSelect.Disable()
+		}
+	}
+	qualitySelect.OnChanged = func(string) { fillAudio(qualitySelect.SelectedIndex()) }
+
+	var form *widget.Form
+	addStreamRows := func() {
+		if streamRows {
+			return
+		}
+		streamRows = true
+		form.Append("Quality", qualitySelect)
+		form.Append("Audio", audioSelect)
+		if relayout != nil {
+			relayout()
+		}
+	}
+	// Video replaces only the category ODM guessed from the name, not one
+	// the browser request or the person chose.
+	setVideoCategory := func() {
+		auto := catSelect.Selected == engine.Category(nameEntry.Text) && pre.Category == ""
+		if auto && catSelect.Selected != "Video" {
+			streamCat = catSelect.Selected
+			catSelect.SetSelected("Video")
+		}
+	}
+	showStream := func(addr string, kind media.Kind, c *engine.StreamChoices, err error) {
+		addStreamRows()
+		streamFor, streamKind, stream, streamErr = addr, kind, nil, nil
+		qualitySelect.Options = nil
+		qualitySelect.ClearSelected()
+		qualitySelect.PlaceHolder = "—"
+		setVideoCategory()
+		switch {
+		case errors.Is(err, engine.ErrStreamRefused):
+			streamErr = err
+			infoLabel.SetText(err.Error())
+		case err != nil:
+			infoLabel.SetText(err.Error() + " · Start lets ODM pick the best quality")
+		}
+		if err != nil {
+			qualitySelect.Disable()
+			fillAudio(-1)
+			return
+		}
+		stream = c
+		for _, q := range c.Qualities {
+			label := q.Label
+			if q.Estimate > 0 {
+				label += " · ~" + humanBytes(q.Estimate)
+			}
+			qualitySelect.Options = append(qualitySelect.Options, label)
+		}
+		qualitySelect.Enable()
+		qualitySelect.SetSelectedIndex(0) // OnChanged fills the audio list
+		info := strings.ToUpper(string(c.Kind)) + " stream"
+		if c.Note != "" {
+			info += " · " + c.Note
+		}
+		infoLabel.SetText(info)
+	}
+	hideStream := func() {
+		stream, streamKind, streamErr, streamFor = nil, "", nil, ""
+		if streamRows {
+			qualitySelect.Options = nil
+			qualitySelect.ClearSelected()
+			qualitySelect.PlaceHolder = "—"
+			qualitySelect.Disable()
+			audioSelect.Options = nil
+			audioSelect.ClearSelected()
+			audioSelect.Disable()
+		}
+		if streamCat != "" {
+			if catSelect.Selected == "Video" { // not changed by hand since
+				catSelect.SetSelected(streamCat)
+			}
+			streamCat = ""
+		}
+	}
+
 	var probeTimer *time.Timer
 	urlEntry.OnChanged = func(s string) {
 		if probeTimer != nil {
 			probeTimer.Stop()
 		}
+		hideStream()
+		infoLabel.SetText("—")
 		if !strings.HasPrefix(s, "http") {
 			return
 		}
 		probeTimer = time.AfterFunc(600*time.Millisecond, func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			p, err := a.mgr.Probe(ctx, s, pre.Headers)
+			// The browser already knows a playlist when it sends one; a
+			// typed address is probed as a file first, and read as a
+			// playlist when its type or extension says it is one.
+			var kind media.Kind
+			if pre.Stream != nil && s == pre.URL {
+				kind = pre.Stream.Kind
+			}
+			var p *engine.Probe
+			var err error
+			if kind == "" {
+				p, err = a.mgr.Probe(ctx, s, pre.Headers)
+				if err == nil {
+					if k := media.Detect(p.ContentType, s, nil); k == media.KindHLS || k == media.KindDASH {
+						kind = k
+					}
+				}
+			}
+			var choices *engine.StreamChoices
+			if kind != "" {
+				choices, err = a.mgr.ProbeStream(ctx, s, pre.Headers)
+				if choices != nil {
+					kind = choices.Kind // the playlist itself is the better judge
+				}
+			}
 			fyne.Do(func() {
+				if urlEntry.Text != s {
+					return // the address changed while this probe ran
+				}
+				fromBrowser := pre.Stream != nil && s == pre.URL
+				switch {
+				case kind != "" && (fromBrowser || !errors.Is(err, engine.ErrStreamRefused)):
+					showStream(strings.TrimSpace(s), kind, choices, err)
+					return
+				case kind != "":
+					// A typed address that only looked like a stream (an
+					// .m3u music list, say) is downloaded as the file it is.
+					infoLabel.SetText(err.Error() + " · downloads as a file")
+					return
+				}
 				if err != nil {
 					infoLabel.SetText(err.Error())
 					return
@@ -128,7 +293,6 @@ func (a *application) newAddForm(parent fyne.Window, pre engine.AddOptions, done
 			})
 		})
 	}
-	urlEntry.SetText(pre.URL) // after OnChanged, so a prefilled URL is probed
 
 	browseButton := widget.NewButtonWithIcon("Browse…", theme.FolderOpenIcon(), func() {
 		dialog.NewFolderOpen(func(dir fyne.ListableURI, err error) {
@@ -140,7 +304,7 @@ func (a *application) newAddForm(parent fyne.Window, pre engine.AddOptions, done
 	})
 	folderRow := container.NewBorder(nil, nil, nil, browseButton, folderEntry)
 
-	form := widget.NewForm(
+	form = widget.NewForm(
 		widget.NewFormItem("URL", urlEntry),
 		widget.NewFormItem("Category", catSelect),
 		widget.NewFormItem("Save folder", folderRow),
@@ -150,6 +314,16 @@ func (a *application) newAddForm(parent fyne.Window, pre engine.AddOptions, done
 		widget.NewFormItem("Queue", queueSelect),
 		widget.NewFormItem("File info", infoLabel),
 	)
+	urlEntry.SetText(pre.URL) // after OnChanged and the form, so a prefilled URL is probed
+	if pre.Stream != nil {
+		// Known to be a playlist: add the rows before the window is shown,
+		// so it is sized for them, and fill them once the playlist is read.
+		addStreamRows()
+		qualitySelect.PlaceHolder = "Reading the playlist…"
+		qualitySelect.Disable()
+		audioSelect.Disable()
+		setVideoCategory()
+	}
 
 	var create func(start, confirmed bool)
 	create = func(start, confirmed bool) {
@@ -159,11 +333,33 @@ func (a *application) newAddForm(parent fyne.Window, pre engine.AddOptions, done
 		if url == "" {
 			return
 		}
+		var job *engine.StreamJob
+		switch {
+		case streamFor == url && streamErr != nil:
+			dialog.ShowError(streamErr, parent)
+			return
+		case streamFor == url && stream != nil:
+			j, err := stream.Job(url, qualitySelect.SelectedIndex(), audioSelect.SelectedIndex())
+			if err != nil {
+				dialog.ShowError(err, parent)
+				return
+			}
+			job = &j
+		case streamFor == url && streamKind != "":
+			// The playlist could not be read just now: ODM picks the best
+			// quality when the download runs.
+			job = &engine.StreamJob{Kind: streamKind, Manifest: url}
+		case pre.Stream != nil && url == pre.URL:
+			// Started before the playlist was read: ODM picks the best.
+			j := *pre.Stream
+			job = &j
+		}
 		if existing, dup := a.mgr.FindByURL(url); dup && !confirmed {
 			a.askDuplicate(parent, existing, func() { create(start, true) })
 			return
 		}
 		info := a.mgr.Create(engine.AddOptions{
+			Stream:      job,
 			URL:         url,
 			Dir:         strings.TrimSpace(folderEntry.Text),
 			FileName:    engine.SanitizeName(nameEntry.Text),

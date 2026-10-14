@@ -70,8 +70,9 @@ Keep ODM running, then:
 - **Click "Download this video"** over a player. The button appears when the
   page loads a video or audio file of at least 512 KB; with several, it
   lists them. HLS/DASH streams are listed too, first the one the player
-  loaded first (usually the playlist with every quality); ODM downloads the
-  best quality that playlist offers.
+  loaded first (usually the playlist with every quality); ODM's New Download
+  window then lists its qualities and audio tracks (with that window turned
+  off, ODM picks the best quality itself).
 - **Right-click** a link, video, audio or image → **Download with ODM**.
 
 The popup toggles takeover and tests the connection.

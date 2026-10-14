@@ -16,8 +16,14 @@ All notable changes to ODM are documented here. The format is based on
   `ffmpeg_path` in `settings.json`. Expired links are refreshed once from
   the playlist. Live and DRM-protected streams are refused.
 - The extension's "Download this video" button now sends HLS/DASH streams
-  to ODM. They are added directly in the best quality (no New Download
-  window yet).
+  to ODM.
+- The New Download window reads a stream's playlist and offers its
+  qualities (resolution, bitrate, codecs, estimated size) and audio tracks,
+  best first. This also works for a playlist address typed or pasted by
+  hand. A single-quality playlist says so, and live or DRM-protected
+  streams are refused before anything is queued; if the playlist cannot be
+  read just then, the stream can still be queued and ODM picks the best
+  quality when it runs.
 
 ### Changed
 

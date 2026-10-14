@@ -86,12 +86,20 @@ func TestBrowserAddStream(t *testing.T) {
 		return w.Code
 	}
 
+	if c := post(`{"url":"http://h/a/master.m3u8","stream":"hls","prompt":true,"start":false,"file_name":"Ep 1"}`); c != http.StatusAccepted {
+		t.Fatalf("stream add: %d, want 202 (the window picks the quality)", c)
+	}
+	if prompts != 1 || len(mgr.List()) != 0 {
+		t.Fatalf("prompts %d, list %d", prompts, len(mgr.List()))
+	}
+	// Without the window (headless, or turned off) it is queued directly.
+	s.OnPrompt = nil
 	if c := post(`{"url":"http://h/a/master.m3u8","stream":"hls","prompt":true,"start":false,"file_name":"Ep 1"}`); c != http.StatusCreated {
-		t.Fatalf("stream add: %d, want 201 (no window for streams yet)", c)
+		t.Fatalf("stream add without window: %d", c)
 	}
 	list := mgr.List()
-	if prompts != 0 || len(list) != 1 || list[0].Stream != "hls" || list[0].FileName != "Ep 1" {
-		t.Fatalf("prompts %d, list %+v", prompts, list)
+	if len(list) != 1 || list[0].Stream != "hls" || list[0].FileName != "Ep 1" {
+		t.Fatalf("list %+v", list)
 	}
 	if c := post(`{"url":"http://h/a/x.ism/Manifest","stream":"smooth"}`); c != http.StatusBadRequest {
 		t.Fatalf("unsupported stream: %d, want 400", c)
