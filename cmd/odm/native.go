@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"odm/internal/ipc"
+	"odm/internal/media"
 	"odm/internal/native"
 )
 
@@ -69,6 +70,21 @@ func relayDownload(client *http.Client, m native.Message) native.Reply {
 	}
 	if len(headers) > 0 {
 		payload["headers"] = headers
+	}
+	if m.Kind == "stream" {
+		// The extension only saw the response headers, not the body, so
+		// the format comes from the Content-Type and the URL.
+		k := media.Detect(m.Mime, m.URL, nil)
+		if k == media.KindFile || k == media.KindNone {
+			// The extension trusts a playlist extension over a media type
+			// some servers mislabel playlists with (video/mp2t, ...).
+			k = media.Detect("", m.URL, nil)
+		}
+		if k != media.KindHLS && k != media.KindDASH {
+			return native.Reply{Error: "this stream format is not supported"}
+		}
+		payload["stream"] = string(k)
+		payload["file_name"] = native.StreamName(m.Title)
 	}
 	body, _ := json.Marshal(payload)
 	resp, err := client.Post(ipc.BaseURL+"/api/downloads", "application/json", bytes.NewReader(body))

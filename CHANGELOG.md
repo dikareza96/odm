@@ -6,6 +6,24 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- HLS and DASH streams: ODM reads the playlist, picks the best quality,
+  downloads the segments over several connections (each segment is kept,
+  so a resume skips the finished ones) and joins them into one file.
+  AES-128 encrypted HLS is decrypted. Separate video and audio tracks are
+  joined with ffmpeg when it is found next to ODM, on PATH, or at
+  `ffmpeg_path` in `settings.json`. Expired links are refreshed once from
+  the playlist. Live and DRM-protected streams are refused.
+- The extension's "Download this video" button now sends HLS/DASH streams
+  to ODM. They are added directly in the best quality (no New Download
+  window yet).
+
+### Changed
+
+- Removing a download together with its file waits for the transfer to
+  stop first, so the file is not still open (Windows refused to delete it).
+
 ## [0.2.0] - 2026-10-13
 
 ### Added

@@ -49,11 +49,15 @@ queues. It runs as a desktop app, or headless with a JSON API.
 **Integration**
 - A browser extension (Chrome, Edge, Firefox) hands downloads to ODM through
   native messaging, and opens them in a *New Download* window where you
-  choose the folder and name. ODM can register itself with each browser.
+  choose the folder and name (streams are queued directly). ODM can register itself with each browser.
 - A **Download this video** button appears over a video player when the
   extension sees the page load a video or audio file. It names the file
-  after the page title. Streams split into many segments (HLS/DASH) are not
-  supported yet. DRM-protected video is not supported and never will be.
+  after the page title. Streams split into many segments (HLS/DASH) are
+  downloaded segment by segment in the best quality; separate video and
+  audio tracks are joined with [ffmpeg](https://ffmpeg.org/) if it is
+  installed (next to ODM, on PATH, or set in `settings.json` as
+  `ffmpeg_path`). Live streams are not supported yet. DRM-protected video
+  is not supported and never will be.
 - A clipboard monitor queues downloadable URLs you copy. You can turn it on
   or off at any time.
 
@@ -218,7 +222,7 @@ extension/          MV3 browser extension source and native-host manifests
 - A properties dialog for each download.
 - A credentials prompt for HTTP 401 responses (Basic and Digest).
 - ZIP preview, sounds, a virus-scan hook, grabber projects, and translations.
-- An HLS/DASH grabber.
+- Choosing the quality of an HLS/DASH stream, and live streams.
 - Signed self-update, and code-signed Windows builds.
 
 ## License

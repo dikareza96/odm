@@ -81,6 +81,8 @@ type Info struct {
 	SpeedLimit   int64       `json:"speed_limit"`
 	OpenWhenDone bool        `json:"open_when_done"`
 	Chunks       []ChunkInfo `json:"chunks"`
-	CreatedAt    time.Time   `json:"created_at"`
-	UpdatedAt    time.Time   `json:"updated_at"`
+	// Stream is "hls" or "dash" for a segmented download, "" for a file.
+	Stream    string    `json:"stream,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

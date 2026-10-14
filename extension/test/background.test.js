@@ -8,6 +8,8 @@ test("mediaKind", () => {
   assert.equal(bg.mediaKind("https://cdn/x/master.m3u8", ""), "stream");
   assert.equal(bg.mediaKind("https://cdn/x/manifest", "application/dash+xml"), "stream");
   assert.equal(bg.mediaKind("https://cdn/x/seg-001.ts", "video/mp2t"), null); // HLS segment
+  assert.equal(bg.mediaKind("https://cdn/x/chunk-5.m4s", "video/mp4"), null); // fMP4 segment
+  assert.equal(bg.mediaKind("https://cdn/x/seg", "audio/iso.segment"), null);
   assert.equal(bg.mediaKind("https://cdn/clip.mp4", "application/octet-stream"), "file");
   assert.equal(bg.mediaKind("https://cdn/page.html", "text/html"), null);
   assert.equal(bg.mediaKind("https://cdn/song", "audio/mpeg; charset=x"), "file");
@@ -52,4 +54,27 @@ test("mergeMedia dedupes, keeps the larger size, caps the list", () => {
   for (let i = 0; i < 40; i++) list = bg.mergeMedia(list, { url: "u" + i, size: i });
   assert.equal(list.length, 15);
   assert.equal(list[0].url, "u39");
+});
+
+test("mergeMedia keeps when an item was first seen", () => {
+  let list = bg.mergeMedia([], { url: "m", size: 0, at: 5 });
+  list = bg.mergeMedia(list, { url: "m", size: 0, at: 9 });
+  assert.equal(list[0].at, 5);
+  assert.equal(bg.mergeMedia([], { url: "x", size: 0 })[0].at, undefined);
+});
+
+test("mergeMedia drops files before playlists when full", () => {
+  let list = bg.mergeMedia([], { url: "master", kind: "stream", size: 0 });
+  for (let i = 0; i < 40; i++) list = bg.mergeMedia(list, { url: "f" + i, kind: "file", size: i });
+  assert.equal(list.length, 15);
+  assert.ok(list.some((x) => x.url === "master"));
+  assert.equal(list[0].url, "f39");
+});
+
+test("streamFormat", () => {
+  assert.equal(bg.streamFormat("https://cdn/x/master.m3u8", ""), "HLS");
+  assert.equal(bg.streamFormat("https://cdn/x/play", "application/x-mpegURL; charset=utf-8"), "HLS");
+  assert.equal(bg.streamFormat("https://cdn/x/manifest", "application/dash+xml"), "DASH");
+  assert.equal(bg.streamFormat("https://cdn/x/m.mpd?t=1", "text/plain"), "DASH");
+  assert.equal(bg.streamFormat("https://cdn/x/video", "video/mp4"), "");
 });

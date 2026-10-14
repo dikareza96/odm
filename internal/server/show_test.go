@@ -73,3 +73,27 @@ func TestBrowserAddPrompts(t *testing.T) {
 		t.Fatalf("dialog off: %d, prompts %d", c, len(prompted))
 	}
 }
+
+func TestBrowserAddStream(t *testing.T) {
+	mgr := engine.NewManager(engine.Settings{Dir: t.TempDir()}, "")
+	s := New(mgr)
+	h := s.Handler()
+	prompts := 0
+	s.OnPrompt = func(engine.AddOptions) bool { prompts++; return true }
+	post := func(body string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/downloads", strings.NewReader(body)))
+		return w.Code
+	}
+
+	if c := post(`{"url":"http://h/a/master.m3u8","stream":"hls","prompt":true,"start":false,"file_name":"Ep 1"}`); c != http.StatusCreated {
+		t.Fatalf("stream add: %d, want 201 (no window for streams yet)", c)
+	}
+	list := mgr.List()
+	if prompts != 0 || len(list) != 1 || list[0].Stream != "hls" || list[0].FileName != "Ep 1" {
+		t.Fatalf("prompts %d, list %+v", prompts, list)
+	}
+	if c := post(`{"url":"http://h/a/x.ism/Manifest","stream":"smooth"}`); c != http.StatusBadRequest {
+		t.Fatalf("unsupported stream: %d, want 400", c)
+	}
+}

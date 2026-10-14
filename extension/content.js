@@ -76,8 +76,7 @@
     });
     ui.dl.addEventListener("click", (e) => {
       e.stopPropagation();
-      const files = items.filter((i) => i.kind === "file");
-      if (files.length === 1 && items.length === 1) send(files[0]);
+      if (items.length === 1) send(items[0]);
       else toggleMenu();
     });
     document.documentElement.appendChild(host);
@@ -89,23 +88,33 @@
       return;
     }
     ui.menu.replaceChildren();
-    for (const it of items) {
+    for (const it of ordered()) {
       const row = document.createElement("div");
-      const type = it.mime ? it.mime.split("/")[1] : "video";
       if (it.kind === "stream") {
-        row.className = "off";
-        row.textContent = "Stream (HLS/DASH) — not supported yet";
+        // Only headers were seen: whether this playlist lists every quality
+        // or is one of them is known once ODM reads it.
+        row.textContent = `${it.format || "Media"} stream`;
       } else {
+        const type = it.mime ? it.mime.split("/")[1] : "video";
         row.textContent = `${type} file${it.size ? ", " + fmtSize(it.size) : ""}`;
-        row.addEventListener("click", (e) => {
-          e.stopPropagation();
-          ui.menu.hidden = true;
-          send(it);
-        });
       }
+      row.addEventListener("click", (e) => {
+        e.stopPropagation();
+        ui.menu.hidden = true;
+        send(it);
+      });
       ui.menu.appendChild(row);
     }
     ui.menu.hidden = false;
+  }
+
+  // Streams first, in the order the player loaded them: a player reads the
+  // playlist listing every quality before the one quality it plays, so the
+  // first is usually the complete one. Files follow, largest first.
+  function ordered() {
+    const streams = items.filter((i) => i.kind === "stream").sort((a, b) => (a.at || 0) - (b.at || 0));
+    const files = items.filter((i) => i.kind !== "stream").sort((a, b) => b.size - a.size);
+    return [...streams, ...files];
   }
 
   function flash(text) {
@@ -117,14 +126,15 @@
   function send(item) {
     chrome.runtime.sendMessage({ type: "odm-grab", item }, (reply) => {
       if (chrome.runtime.lastError || !reply) flash("ODM is not reachable");
-      else flash(reply.ok ? "Sent to ODM" : `ODM: ${reply.error}`);
+      else if (!reply.ok) flash(`ODM: ${reply.error}`);
+      else flash(reply.message === "already in the list" ? "Already in ODM" : "Sent to ODM");
     });
   }
 
   function label() {
     const files = items.filter((i) => i.kind === "file");
     const best = files.sort((a, b) => b.size - a.size)[0];
-    if (!best) return "Download this video (stream)";
+    if (!best) return "Download this video";
     return `Download this video${best.size ? " · " + fmtSize(best.size) : ""}`;
   }
 

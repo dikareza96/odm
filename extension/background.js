@@ -67,9 +67,9 @@ function isExcluded(url, patterns) {
   }
 }
 
-// mediaKind classifies a response: "stream" for HLS/DASH playlists (not
-// downloadable as one file yet), "file" for a single audio/video file,
-// null for anything else.
+// mediaKind classifies a response: "stream" for HLS/DASH playlists (ODM
+// fetches their segments), "file" for a single audio/video file, null for
+// anything else.
 function mediaKind(url, mime) {
   mime = String(mime || "").split(";")[0].trim().toLowerCase();
   let path = "";
@@ -79,10 +79,28 @@ function mediaKind(url, mime) {
     return null;
   }
   if (STREAM_TYPES.includes(mime) || path.endsWith(".m3u8") || path.endsWith(".mpd")) return "stream";
-  if (mime === "video/mp2t" || path.endsWith(".ts")) return null; // HLS segments, not whole files
+  // Segments of a stream, not whole files: MPEG-TS (HLS) and fragmented
+  // MP4 (DASH, newer HLS). Listing them would also push the playlists out.
+  if (mime === "video/mp2t" || path.endsWith(".ts")) return null;
+  if (mime === "video/iso.segment" || mime === "audio/iso.segment" || path.endsWith(".m4s")) return null;
   if (mime.startsWith("video/") || mime.startsWith("audio/")) return "file";
   if (MEDIA_EXT.test(path) && (mime === "" || mime === "application/octet-stream")) return "file";
   return null;
+}
+
+// streamFormat names a stream's format for the menu: "HLS", "DASH" or ""
+// when the type and URL don't say. ODM decides again on its side.
+function streamFormat(url, mime) {
+  mime = String(mime || "").split(";")[0].trim().toLowerCase();
+  let path = "";
+  try {
+    path = new URL(url).pathname.toLowerCase();
+  } catch {
+    return "";
+  }
+  if (mime === "application/dash+xml" || path.endsWith(".mpd")) return "DASH";
+  if (STREAM_TYPES.includes(mime) || path.endsWith(".m3u8")) return "HLS";
+  return "";
 }
 
 // normalizeMediaURL turns a player's partial request into the whole file.
@@ -115,12 +133,22 @@ function totalSize(headers) {
 }
 
 // mergeMedia adds item to list (deduplicated by URL, keeping the larger
-// known size), newest first, capped.
+// known size and the first time it was seen), newest first, capped. Over
+// the cap the oldest file goes first: a player keeps loading files, while
+// the playlist with every quality is loaded once, at the start.
 function mergeMedia(list, item) {
   const rest = (list || []).filter((x) => x.url !== item.url);
   const old = (list || []).find((x) => x.url === item.url);
-  if (old && old.size > item.size) item = { ...item, size: old.size };
-  return [item, ...rest].slice(0, MAX_MEDIA_PER_TAB);
+  if (old) {
+    item = { ...item, size: Math.max(old.size, item.size) };
+    if (old.at !== undefined && !(item.at <= old.at)) item.at = old.at;
+  }
+  const next = [item, ...rest];
+  while (next.length > MAX_MEDIA_PER_TAB) {
+    const f = next.findLastIndex((x) => x.kind !== "stream");
+    next.splice(f >= 0 ? f : next.length - 1, 1);
+  }
+  return next;
 }
 
 /* ---------- browser side ---------- */
@@ -182,6 +210,19 @@ async function tabMedia(tabId) {
   return (await chrome.storage.session.get(key))[key] || [];
 }
 
+// Players load several playlists at once; each update reads, merges and
+// writes the tab's list, so updates to one tab run one after another or
+// the later write drops what the earlier one added.
+const tabQueues = new Map();
+function updateTab(tabId, fn) {
+  const run = (tabQueues.get(tabId) || Promise.resolve()).then(fn).catch(() => {});
+  tabQueues.set(tabId, run);
+  run.then(() => {
+    if (tabQueues.get(tabId) === run) tabQueues.delete(tabId);
+  });
+  return run;
+}
+
 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
   // Listeners are registered synchronously at load, as both a Chromium
   // service worker and a Firefox event page require.
@@ -233,9 +274,10 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
       if (!kind) return;
       const size = totalSize(d.responseHeaders);
       if (kind === "file" && size > 0 && size < MIN_MEDIA_BYTES) return;
-      const item = { url: normalizeMediaURL(d.url), mime, size, kind, frameId: d.frameId };
-      tabMedia(d.tabId).then(async (list) => {
-        const next = mergeMedia(list, item);
+      const item = { url: normalizeMediaURL(d.url), mime, size, kind, frameId: d.frameId, at: Date.now() };
+      if (kind === "stream") item.format = streamFormat(d.url, mime);
+      updateTab(d.tabId, async () => {
+        const next = mergeMedia(await tabMedia(d.tabId), item);
         await chrome.storage.session.set({ [tabKey(d.tabId)]: next });
         const forFrame = next.filter((x) => x.frameId === d.frameId);
         chrome.tabs.sendMessage(d.tabId, { type: "odm-media", items: forFrame }, { frameId: d.frameId })
@@ -263,6 +305,7 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
       handOff({
         url: msg.item.url, referrer: sender.url || tab.url || "", title: tab.title || "",
         mime: msg.item.mime || "", size: msg.item.size || 0,
+        kind: msg.item.kind === "stream" ? "stream" : "file",
       }).then(sendResponse);
       return true;
     }
@@ -277,5 +320,5 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { hasType, hostMatches, isExcluded, mediaKind, normalizeMediaURL, totalSize, mergeMedia, DEFAULT_TYPES };
+  module.exports = { hasType, hostMatches, isExcluded, mediaKind, streamFormat, normalizeMediaURL, totalSize, mergeMedia, DEFAULT_TYPES };
 }

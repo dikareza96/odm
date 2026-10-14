@@ -780,13 +780,17 @@ func (d *Download) infoLocked() Info {
 			path += ".odmpart"
 		}
 	}
+	stream := ""
+	if d.Stream != nil {
+		stream = string(d.Stream.Kind)
+	}
 	return Info{
 		ID: d.ID, URL: d.URL, FinalURL: d.FinalURL, FileName: d.FileName, FilePath: path,
 		Dir: d.Dir, Status: d.Status, Error: d.Err, Total: d.Total, Done: done,
 		Progress: pct, Speed: d.speed, Connections: d.Connections, Active: active,
 		RangeOK: d.RangeOK, Category: d.category(), Queue: d.Queue, Description: d.Description, Order: d.Order, Chunks: chunks,
 		SpeedLimit: d.SpeedLimit, OpenWhenDone: d.OpenWhenDone,
-		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
+		Stream: stream, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
 }
 

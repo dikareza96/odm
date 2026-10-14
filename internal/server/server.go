@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"odm/internal/engine"
+	"odm/internal/media"
 	"odm/internal/osutil"
 )
 
@@ -147,6 +148,9 @@ type addRequest struct {
 	// Prompt marks a request a person started in the browser: the desktop
 	// UI may confirm it in the New Download window (202) rather than add it.
 	Prompt bool `json:"prompt"`
+	// Stream ("hls" or "dash") makes URL a playlist to download segment
+	// by segment instead of a file.
+	Stream string `json:"stream"`
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -172,7 +176,18 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		Queue:       strings.TrimSpace(req.Queue),
 		Description: strings.TrimSpace(req.Description),
 	}
-	if req.Prompt && s.OnPrompt != nil && !s.mgr.Settings().NoStartDialog && s.OnPrompt(opts) {
+	if req.Stream != "" {
+		k := media.Kind(req.Stream)
+		if k != media.KindHLS && k != media.KindDASH {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream must be hls or dash"})
+			return
+		}
+		opts.Stream = &engine.StreamJob{Kind: k, Manifest: req.URL}
+	}
+	// The New Download window probes the URL as one file, which is wrong
+	// for a playlist, so streams are added directly with the best quality
+	// until there is a window to choose one.
+	if req.Prompt && opts.Stream == nil && s.OnPrompt != nil && !s.mgr.Settings().NoStartDialog && s.OnPrompt(opts) {
 		// The person decides in the window (it also handles duplicates).
 		writeJSON(w, http.StatusAccepted, map[string]bool{"prompted": true})
 		return

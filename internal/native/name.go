@@ -48,6 +48,13 @@ func SuggestName(filename, title, mime string) string {
 	return name + ext
 }
 
+// StreamName names a stream after the page title, without an extension:
+// the container is only known once ODM has read the playlist and picked the
+// tracks, and it adds the extension then. "" leaves the choice to ODM.
+func StreamName(title string) string {
+	return titleName(strings.TrimSpace(title))
+}
+
 // titleName turns a page title into a file name:
 //   - the site name after the last " | " is dropped ("Episode 11 | Otaku
 //     Desu" -> "Episode 11"); other separators such as " - " are kept, as

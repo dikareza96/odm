@@ -34,3 +34,12 @@ func TestSuggestName(t *testing.T) {
 		t.Fatalf("long title not capped on a rune boundary: %d runes", len([]rune(long)))
 	}
 }
+
+func TestStreamName(t *testing.T) {
+	if got := StreamName("  Episode 11 | Some Site "); got != "Episode_11" {
+		t.Fatalf("StreamName = %q", got)
+	}
+	if got := StreamName(""); got != "" {
+		t.Fatalf("empty title = %q", got)
+	}
+}

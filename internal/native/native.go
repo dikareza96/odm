@@ -29,6 +29,9 @@ type Message struct {
 	Mime      string `json:"mime"`
 	Size      int64  `json:"size"`
 	UserAgent string `json:"userAgent"`
+	// Kind is "stream" for an HLS/DASH playlist the extension saw the
+	// page's player load; anything else is a plain file.
+	Kind string `json:"kind"`
 }
 
 // Reply is the response sent back to the extension.
