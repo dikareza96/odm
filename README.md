@@ -56,8 +56,8 @@ queues. It runs as a desktop app, or headless with a JSON API.
   downloaded segment by segment in the quality you pick (the best by
   default); separate video and
   audio tracks are joined with [ffmpeg](https://ffmpeg.org/) if it is
-  installed (next to ODM, on PATH, or set in `settings.json` as
-  `ffmpeg_path`). Live streams are not supported yet. DRM-protected video
+  installed (next to ODM, on PATH, or chosen in Options > Downloads, which
+  also shows the ffmpeg version ODM found). Live streams are not supported yet. DRM-protected video
   is not supported and never will be.
 - A clipboard monitor queues downloadable URLs you copy. You can turn it on
   or off at any time.

@@ -26,6 +26,7 @@ import (
 	"odm/internal/autostart"
 	"odm/internal/browserreg"
 	"odm/internal/engine"
+	"odm/internal/ffmpeg"
 	"odm/internal/media"
 	"odm/internal/osutil"
 	"odm/internal/update"
@@ -618,6 +619,42 @@ func (a *application) openOptionsTab(tab int) {
 	uaEntry := widget.NewEntry()
 	uaEntry.SetText(settings.UserAgent)
 	uaEntry.SetPlaceHolder(engine.DefaultUserAgent)
+	// ffmpeg joins the separate video and audio of some streams. The
+	// status line says what ODM would use now: the typed path, else the
+	// copy next to odm.exe, else PATH. Checking runs "ffmpeg -version",
+	// so it waits for typing to pause, and a stale result (the text
+	// changed while it ran) is dropped by the generation counter.
+	ffEntry := widget.NewEntry()
+	ffEntry.SetText(settings.FFmpegPath)
+	ffEntry.SetPlaceHolder("Found automatically")
+	ffStatus := hint("")
+	var ffGen int
+	var ffTimer *time.Timer
+	checkFFmpeg := func(delay time.Duration) {
+		ffGen++
+		gen, typed := ffGen, ffEntry.Text
+		if ffTimer != nil {
+			ffTimer.Stop()
+		}
+		ffTimer = time.AfterFunc(delay, func() {
+			msg := ffmpegStatus(typed)
+			fyne.Do(func() {
+				if gen == ffGen {
+					ffStatus.SetText(msg)
+				}
+			})
+		})
+	}
+	ffEntry.OnChanged = func(string) { checkFFmpeg(600 * time.Millisecond) }
+	ffBrowse := widget.NewButtonWithIcon("Browse", theme.FolderOpenIcon(), func() {
+		dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+			if err == nil && r != nil {
+				_ = r.Close()
+				ffEntry.SetText(r.URI().Path())
+			}
+		}, w).Show()
+	})
+	checkFFmpeg(0)
 	downloadsTab := container.NewVBox(
 		header("Default download settings"),
 		startCheck,
@@ -635,6 +672,10 @@ func (a *application) openOptionsTab(tab int) {
 		widget.NewLabel("The browser extension leaves downloads from these sites alone:"),
 		excludeEntry,
 		hint("Separate names by spaces. A leading *. matches subdomains."),
+		widget.NewSeparator(),
+		widget.NewLabel("ffmpeg (joins the video and audio of some streams):"),
+		container.NewBorder(nil, nil, nil, ffBrowse, ffEntry),
+		ffStatus,
 	)
 
 	// Connection
@@ -905,7 +946,12 @@ func (a *application) openOptionsTab(tab int) {
 	closeWin := func() {
 		w.Close()
 	}
-	w.SetOnClosed(func() { a.optionsWin = nil })
+	w.SetOnClosed(func() {
+		a.optionsWin = nil
+		if ffTimer != nil {
+			ffTimer.Stop()
+		}
+	})
 	save := func() {
 		conns, conc, limit := settings.Connections, settings.Concurrent, settings.SpeedLimit/1024
 		fmt.Sscanf(connSelect.Selected, "%d", &conns)
@@ -963,6 +1009,7 @@ func (a *application) openOptionsTab(tab int) {
 		next.CategoryDirs = cleanDirs
 		next.HostConnections = hostMap
 		next.UserAgent = strings.TrimSpace(uaEntry.Text)
+		next.FFmpegPath = strings.TrimSpace(ffEntry.Text)
 		next.DuplicateAuto = engine.DuplicateSkip
 		if dupSelect.Selected == dupAgain {
 			next.DuplicateAuto = engine.DuplicateAgain
@@ -993,6 +1040,31 @@ func (a *application) openOptionsTab(tab int) {
 		container.NewBorder(nil, buttons, nil, nil, tabs)))
 	w.Resize(fyne.NewSize(640, 560))
 	w.Show()
+}
+
+// ffmpegStatus describes the ffmpeg that the typed path (empty: the
+// automatic search) leads to, with its version line.
+func ffmpegStatus(typed string) string {
+	bin, err := ffmpeg.Locate(typed)
+	if err != nil {
+		if strings.TrimSpace(typed) == "" {
+			return "Not found. Streams that keep video and audio apart need it: " +
+				"put ffmpeg next to ODM, add it to PATH, or choose it here."
+		}
+		return "No ffmpeg at this path. Leave it empty to search next to ODM and on PATH."
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	v, err := ffmpeg.Version(ctx, bin)
+	if err != nil {
+		return "Found " + bin + ", but it did not run: " + err.Error()
+	}
+	// "ffmpeg version 7.1 Copyright (c) 2000-2024 the FFmpeg developers"
+	v, _, _ = strings.Cut(v, " Copyright")
+	if v == "" {
+		v = "unknown version"
+	}
+	return "Using " + bin + " (" + v + ")"
 }
 
 // parseFileTypes turns "torrent, .SRT nupkg" into ["torrent" "srt" "nupkg"].
@@ -1303,7 +1375,9 @@ type progressView struct {
 	saveTo     *widget.Label
 	bar        *widget.ProgressBar
 	strip      *chunkStrip
+	mapLabel   *widget.Label
 	conns      *widget.Table
+	connBox    fyne.CanvasObject
 	connRows   []engine.ChunkInfo
 	connMu     sync.Mutex
 	pauseBtn   *widget.Button
@@ -1481,16 +1555,17 @@ func (a *application) openProgressWindow(id string) {
 
 	buttons := container.NewHBox(v.hideBtn, layout.NewSpacer(), v.pauseBtn, cancelBtn)
 	v.top = container.NewVBox(tabs, v.bar, buttons)
-	mapLabel := widget.NewLabelWithStyle("Connection map", fyne.TextAlignCenter, fyne.TextStyle{})
-	v.details = container.NewBorder(container.NewVBox(mapLabel, v.strip), nil, nil, nil, framed(v.conns))
+	v.mapLabel = widget.NewLabelWithStyle("Connection map", fyne.TextAlignCenter, fyne.TextStyle{})
+	v.connBox = framed(v.conns)
+	v.details = container.NewBorder(container.NewVBox(v.mapLabel, v.strip), nil, nil, nil, v.connBox)
 
 	v.win.SetContent(container.New(layout.NewCustomPaddedLayout(6, 10, 10, 10),
 		container.NewBorder(v.top, nil, nil, nil, v.details)))
-	v.win.Resize(fyne.NewSize(560, 480))
 	v.win.SetOnClosed(func() { delete(a.progressWindows, id) })
 
 	a.progressWindows[id] = v
 	a.updateProgressWindow(id)
+	v.win.Resize(fyne.NewSize(560, detailsHeight(v)))
 	v.win.Show()
 }
 
@@ -1506,8 +1581,25 @@ func (a *application) toggleProgressDetails(v *progressView) {
 	} else {
 		v.details.Show()
 		v.hideBtn.SetText("<< Hide details")
-		v.win.Resize(fyne.NewSize(w, 480))
+		v.win.Resize(fyne.NewSize(w, detailsHeight(v)))
 	}
+}
+
+// detailsHeight is the window height with details shown: room for the
+// connection table, or just the strip for a stream, which has no table.
+func detailsHeight(v *progressView) float32 {
+	if v.connBox.Visible() {
+		return 480
+	}
+	return v.top.MinSize().Height + v.details.MinSize().Height + 30
+}
+
+// segmentsText is "12 of 340", or "" before a run has read the playlist.
+func segmentsText(d engine.Info) string {
+	if d.Segments <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d of %d", d.SegmentsDone, d.Segments)
 }
 
 // autoProgress opens the progress window for a download the user just
@@ -1561,7 +1653,27 @@ func (a *application) updateProgressWindow(id string) {
 	if d.Total > 0 {
 		v.bar.SetValue(d.Progress / 100)
 	}
-	v.strip.set(d.Chunks, d.Total)
+	if d.Stream != "" {
+		// A stream has no byte ranges or connections to map: its pieces
+		// are segments, fetched a few at a time in any order. The strip
+		// becomes one bar of segments done, and the empty table goes.
+		// The counts are not saved, so after a restart a finished stream
+		// has none; it is shown whole rather than as "-".
+		segs, have := d.Segments, d.SegmentsDone
+		text := segmentsText(d)
+		if segs == 0 && d.Status == engine.StatusComplete {
+			segs, have, text = 1, 1, "complete"
+		}
+		v.mapLabel.SetText("Segments: " + dash(text))
+		var bar []engine.ChunkInfo
+		if segs > 0 {
+			bar = []engine.ChunkInfo{{End: int64(segs) - 1, Done: int64(have)}}
+		}
+		v.strip.set(bar, int64(segs))
+		v.connBox.Hide()
+	} else {
+		v.strip.set(d.Chunks, d.Total)
+	}
 	if d.Status == engine.StatusDownloading || d.Status == engine.StatusQueued {
 		v.pauseBtn.SetText("Pause")
 		v.pauseBtn.SetIcon(theme.MediaPauseIcon())

@@ -790,7 +790,8 @@ func (d *Download) infoLocked() Info {
 		Progress: pct, Speed: d.speed, Connections: d.Connections, Active: active,
 		RangeOK: d.RangeOK, Category: d.category(), Queue: d.Queue, Description: d.Description, Order: d.Order, Chunks: chunks,
 		SpeedLimit: d.SpeedLimit, OpenWhenDone: d.OpenWhenDone,
-		Stream: stream, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
+		Stream: stream, Segments: d.streamSegs, SegmentsDone: d.streamHave,
+		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
 }
 

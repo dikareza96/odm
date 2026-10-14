@@ -12,8 +12,8 @@ All notable changes to ODM are documented here. The format is based on
   downloads the segments over several connections (each segment is kept,
   so a resume skips the finished ones) and joins them into one file.
   AES-128 encrypted HLS is decrypted. Separate video and audio tracks are
-  joined with ffmpeg when it is found next to ODM, on PATH, or at
-  `ffmpeg_path` in `settings.json`. Expired links are refreshed once from
+  joined with ffmpeg when it is found next to ODM, on PATH, or at the path
+  chosen in Options > Downloads, which shows the version ODM found. Expired links are refreshed once from
   the playlist. Live and DRM-protected streams are refused.
 - The extension's "Download this video" button now sends HLS/DASH streams
   to ODM.
@@ -24,6 +24,8 @@ All notable changes to ODM are documented here. The format is based on
   streams are refused before anything is queued; if the playlist cannot be
   read just then, the stream can still be queued and ODM picks the best
   quality when it runs.
+- The progress window of a stream counts its segments ("12 of 340")
+  instead of showing an empty connection map.
 
 ### Changed
 

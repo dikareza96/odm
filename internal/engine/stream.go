@@ -458,7 +458,10 @@ func bestHLS(m *media.HLSMaster) (*media.HLSVariant, *media.HLSRendition, bool) 
 
 // HLSAudioFor returns the audio rendition to pair with a variant of the
 // given group: the default one, else the first. nil means the audio is
-// muxed into the variant.
+// muxed into the variant, including when the default rendition has no URI:
+// the others are then alternates (commentary, another language), and
+// picking one would replace the main audio. hlsAudios offers the same
+// default as "In the video".
 func HLSAudioFor(m *media.HLSMaster, group string) *media.HLSRendition {
 	if group == "" {
 		return nil
@@ -466,7 +469,13 @@ func HLSAudioFor(m *media.HLSMaster, group string) *media.HLSRendition {
 	var first *media.HLSRendition
 	for i := range m.Renditions {
 		r := &m.Renditions[i]
-		if r.Type != "AUDIO" || r.GroupID != group || r.URL == "" {
+		if r.Type != "AUDIO" || r.GroupID != group {
+			continue
+		}
+		if r.URL == "" {
+			if r.Default {
+				return nil
+			}
 			continue
 		}
 		if r.Default {

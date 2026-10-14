@@ -658,3 +658,27 @@ func TestRemoveWaitsForRun(t *testing.T) {
 		t.Fatal("Remove returned before the run ended")
 	}
 }
+
+func TestHLSAudioForMuxedDefault(t *testing.T) {
+	m := &media.HLSMaster{Renditions: []media.HLSRendition{
+		{Type: "AUDIO", GroupID: "a", Name: "Commentary", URL: "https://h/comm.m3u8"},
+		{Type: "AUDIO", GroupID: "a", Name: "Main", Default: true},
+	}}
+	if a := HLSAudioFor(m, "a"); a != nil {
+		t.Fatalf("muxed default replaced by %q", a.Name)
+	}
+	// The New Download window offers the same default first.
+	if l := hlsAudios(m, "a"); len(l) == 0 || l[0].key != "" {
+		t.Fatalf("window default: %+v", l)
+	}
+	// No default at all: the first rendition with a URI, as before.
+	m.Renditions[1].Default = false
+	if a := HLSAudioFor(m, "a"); a == nil || a.Name != "Commentary" {
+		t.Fatalf("no default: got %v", a)
+	}
+	// A default with a URI wins over the others.
+	m.Renditions = append(m.Renditions, media.HLSRendition{Type: "AUDIO", GroupID: "a", Name: "Dub", URL: "https://h/dub.m3u8", Default: true})
+	if a := HLSAudioFor(m, "a"); a == nil || a.Name != "Dub" {
+		t.Fatalf("default with URI: got %v", a)
+	}
+}
