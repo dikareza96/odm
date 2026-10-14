@@ -1,3 +1,6 @@
 /dist/
 *.odmpart
 .commandcode/
+
+# internal research notes — not for publication
+RE-*.md
