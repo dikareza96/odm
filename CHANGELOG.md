@@ -23,6 +23,12 @@ All notable changes to ODM are documented here. The format is based on
   A public name that resolves to a private address (some company networks
   do this for caches) is refused as well.
 
+### Fixed
+
+- File names that Windows reserves for devices (`CON`, `NUL`, `COM1`, …,
+  with any extension) get a leading `_`. Before, a page titled "nul" or
+  "con" could make the download fail or write into a device on Windows.
+
 ### Changed
 
 - The extension sends a media address as the page requested it, without
