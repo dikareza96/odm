@@ -70,6 +70,11 @@ type Download struct {
 	// Segmented downloads: bytes on disk, and segments present / total.
 	streamDone             int64
 	streamHave, streamSegs int
+	// guarded is client wrapped by guardLocal for stream requests. It is
+	// rebuilt when the client or the manifest (Readdress) changes, since
+	// its verdict on the manifest is cached.
+	guarded, guardedFrom *http.Client
+	guardedFor           string
 }
 
 // New creates a queued download. Probing happens on the first Start.

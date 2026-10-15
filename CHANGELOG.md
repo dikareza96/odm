@@ -13,6 +13,16 @@ All notable changes to ODM are documented here. The format is based on
   with how long ago each was seen) to send one to ODM. This covers pages
   where the in-page button does not appear.
 
+### Security
+
+- A stream whose playlist is on a public server can no longer make ODM
+  request addresses on the user's own machine or network (localhost,
+  private and link-local ranges, including after a redirect). Browsers
+  block such requests from web pages; ODM fetched them on the page's
+  behalf. Playlists that are themselves on the local network still work.
+  A public name that resolves to a private address (some company networks
+  do this for caches) is refused as well.
+
 ### Changed
 
 - The extension sends a media address as the page requested it, without

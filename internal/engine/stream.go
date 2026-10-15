@@ -184,7 +184,7 @@ func (d *Download) fetchText(ctx context.Context, raw string) ([]byte, *url.URL,
 		return nil, nil, err
 	}
 	d.decorate(req)
-	resp, err := d.client.Do(req)
+	resp, err := d.streamClient().Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -236,6 +236,25 @@ func (d *Download) decorate(req *http.Request) {
 			req.SetBasicAuth(user, pass)
 		}
 	}
+}
+
+// streamClient is the client for every request of a stream: the
+// download's own, kept off the local network when the manifest is public
+// (see localGuard).
+func (d *Download) streamClient() *http.Client {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	manifest := d.URL
+	if d.Stream != nil && d.Stream.Manifest != "" {
+		manifest = d.Stream.Manifest
+	}
+	if d.guarded == nil || d.guardedFrom != d.client || d.guardedFor != manifest {
+		if d.guarded != nil {
+			d.guarded.CloseIdleConnections() // its pool is its own
+		}
+		d.guarded, d.guardedFrom, d.guardedFor = guardLocal(d.client, manifest), d.client, manifest
+	}
+	return d.guarded
 }
 
 // sameSite reports whether u belongs to the site (registrable domain, e.g.
@@ -850,7 +869,7 @@ func (s *streamRun) fetchWithRetry(ctx context.Context, j pieceJob) error {
 			return err
 		}
 		var perm permanentError
-		if errors.As(err, &perm) {
+		if errors.As(err, &perm) || errors.Is(err, errLocalNetwork) {
 			return err
 		}
 		if errors.Is(err, errExpired) {
@@ -936,7 +955,7 @@ func (s *streamRun) fetch(ctx context.Context, j pieceJob) error {
 	if p.rng != nil {
 		req.Header.Set("Range", p.rng.Header())
 	}
-	resp, err := d.client.Do(req)
+	resp, err := d.streamClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -1077,7 +1096,7 @@ func (s *streamRun) key(ctx context.Context, keyURL string) ([]byte, error) {
 		return nil, err
 	}
 	s.d.decorate(req)
-	resp, err := s.d.client.Do(req)
+	resp, err := s.d.streamClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
