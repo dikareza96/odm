@@ -12,6 +12,13 @@ All notable changes to ODM are documented here. The format is based on
   streams the page has loaded, and its popup lists them (from every frame,
   with how long ago each was seen) to send one to ODM. This covers pages
   where the in-page button does not appear.
+- The extension's menu and popup were redrawn: each item shows its kind,
+  what it holds ("All qualities, up to 1080p", "One quality" plus host and
+  file) and LIVE and Best badges; the playlist with every quality is
+  listed first. To know this the extension reads a stream's playlist once
+  (at most 8 per page, not in private windows, Firefox containers or
+  excluded sites); when that fails the label shows the host and file name.
+  The popup follows the browser's light or dark theme.
 - Live HLS streams are recorded: ODM keeps reloading the playlist and
   saving new segments until the download is stopped (Pause or Stop
   finishes the file), the broadcast ends, or nothing new arrives for a
@@ -45,8 +52,9 @@ All notable changes to ODM are documented here. The format is based on
 ### Changed
 
 - The extension sends a media address as the page requested it, without
-  removing any site's byte-range parameters; only the `#fragment` is
-  dropped.
+  removing any site's byte-range parameters; only the `#fragment` and the
+  low-latency HLS reload parameters (`_HLS_msn`, `_HLS_part`, `_HLS_skip`)
+  are dropped, leaving the rest of the query byte for byte.
 
 ## [0.3.1] - 2026-10-15
 

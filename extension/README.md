@@ -79,6 +79,12 @@ Keep ODM running, then:
   each was seen. Use it when there is no button: audio-only pages, players
   drawn on a canvas, a player in another frame, or after closing the
   button with ✕.
+- **Stream labels:** a stream address seen for the first time is fetched
+  once more (with the page's cookies, at most 512 KB, at most 8 per page)
+  to tell the playlist listing every quality ("Best") from single-quality
+  ones, and to mark live streams. Not in private windows, Firefox
+  containers or excluded sites. If it cannot be read, the label shows the
+  host and file name instead; it is not retried.
 
 The popup also toggles takeover and tests the connection.
 

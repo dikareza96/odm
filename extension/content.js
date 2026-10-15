@@ -12,7 +12,7 @@
   let host = null;
   let ui = null;
   // medialist.js runs first in the same content-script world.
-  const { fmtSize, orderMedia, mediaLabel } = self.odmMediaList;
+  const { fmtSize, orderMedia, mediaRow, ROW_CSS, ICONS } = self.odmMediaList;
 
   // The largest visible video is the player; small ones are previews.
   function mainVideo() {
@@ -31,31 +31,51 @@
   }
 
   // The button lives in a closed shadow root so the page's CSS cannot
-  // restyle or hide it, and ours cannot leak into the page.
+  // restyle or hide it, and ours cannot leak into the page. It is always
+  // dark: it sits on top of video, whatever the page's own theme.
   function build() {
     host = document.createElement("div");
     host.style.cssText = "position:absolute;z-index:2147483647;top:0;left:0;";
     const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
       <style>
-        .bar { display:flex; gap:2px; font:12px/1.4 system-ui,sans-serif; }
-        button { all:unset; cursor:pointer; background:#1f6feb; color:#fff; padding:4px 10px;
-                 border-radius:4px; box-shadow:0 1px 4px rgba(0,0,0,.4); white-space:nowrap; }
-        button:hover { background:#388bfd; }
-        .x { background:#30363d; padding:4px 7px; }
-        .menu { margin-top:4px; background:#161b22; color:#e6edf3; border-radius:4px;
-                box-shadow:0 2px 8px rgba(0,0,0,.5); min-width:220px; }
-        .menu div { padding:6px 10px; cursor:pointer; }
-        .menu div:hover { background:#1f6feb; }
-        .menu .off { color:#8b949e; cursor:default; }
-        .menu .off:hover { background:none; }
-        .status { margin-top:4px; background:#161b22; color:#e6edf3; padding:4px 10px; border-radius:4px; }
+        :host { all: initial; }
+        .wrap { --odm-fg: #e6edf3; --odm-muted: #8b949e; --odm-hover: rgba(56, 139, 253, .18);
+          --odm-icon-bg: #21262d; --odm-accent: #58a6ff;
+          display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+          font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--odm-fg); }
+        .bar { display: flex; gap: 4px; }
+        .bar button { all: unset; box-sizing: border-box; cursor: pointer; height: 32px; border-radius: 8px;
+          display: inline-flex; align-items: center; box-shadow: 0 2px 10px rgba(0, 0, 0, .45); }
+        .bar button:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+        .bar .dl { gap: 7px; padding: 0 13px 0 11px; background: #1f6feb; color: #fff; font-weight: 600; white-space: nowrap; }
+        .bar .dl:hover { background: #388bfd; }
+        .bar .x { width: 32px; justify-content: center; background: rgba(22, 27, 34, .92); color: #c9d1d9; }
+        .bar .x:hover { background: #30363d; color: #fff; }
+        .bar svg { width: 16px; height: 16px; }
+        .menu { box-sizing: border-box; width: 320px; max-width: calc(100vw - 16px); max-height: 340px; overflow-y: auto; padding: 4px;
+          background: rgba(22, 27, 34, .97); border: 1px solid #30363d; border-radius: 12px;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, .55); }
+        .menu .head { padding: 6px 10px 4px; color: var(--odm-muted); font-size: 11px; font-weight: 600;
+          letter-spacing: .05em; text-transform: uppercase; }
+        .status { padding: 7px 12px; border-radius: 8px; background: rgba(22, 27, 34, .97);
+          border: 1px solid #30363d; box-shadow: 0 6px 20px rgba(0, 0, 0, .5); }
+        .status.ok { border-color: rgba(63, 185, 80, .6); }
+        .status.err { border-color: rgba(248, 81, 73, .7); }
+        [hidden] { display: none !important; }
+        ${ROW_CSS}
       </style>
-      <div class="bar"><button class="dl"></button><button class="x" title="Hide">✕</button></div>
-      <div class="menu" hidden></div>
-      <div class="status" hidden></div>`;
+      <div class="wrap">
+        <div class="bar">
+          <button class="dl" type="button"><span class="ico">${ICONS.download}</span><span class="txt"></span></button>
+          <button class="x" type="button" title="Hide" aria-label="Hide">${ICONS.close}</button>
+        </div>
+        <div class="menu" role="list" aria-label="Media found on this page" hidden></div>
+        <div class="status" role="status" aria-live="polite" hidden></div>
+      </div>`;
     ui = {
       dl: root.querySelector(".dl"),
+      dlText: root.querySelector(".dl .txt"),
       x: root.querySelector(".x"),
       menu: root.querySelector(".menu"),
       status: root.querySelector(".status"),
@@ -70,39 +90,85 @@
       if (items.length === 1) send(items[0]);
       else toggleMenu();
     });
+    // A click anywhere else closes the menu. Capture phase: player overlays
+    // often stop clicks from bubbling.
+    document.addEventListener("click", (e) => {
+      if (ui && !ui.menu.hidden && !e.composedPath().includes(host)) closeMenu(false);
+    }, true);
+    root.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !ui.menu.hidden) {
+        e.stopPropagation();
+        closeMenu(true);
+      }
+    });
     document.documentElement.appendChild(host);
+  }
+
+  // menuKey is what the open menu shows; it is redrawn only when that
+  // changes, not on every reload of a live playlist (which would reset its
+  // scroll and focus, and could swallow a click).
+  let menuKey = "";
+  const keyOf = (list) => JSON.stringify(list.map((i) => [i.url, i.quality, i.live, i.master, i.size]));
+
+  function renderMenu() {
+    const key = keyOf(items);
+    if (key === menuKey && ui.menu.childElementCount) return;
+    menuKey = key;
+    const scroll = ui.menu.scrollTop;
+    const focused = [...ui.menu.querySelectorAll(".odm-row")].indexOf(ui.menu.getRootNode().activeElement);
+    ui.menu.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "head";
+    head.textContent = items.length === 1 ? "1 item found" : `${items.length} items found`;
+    ui.menu.appendChild(head);
+    for (const it of orderMedia(items)) {
+      const row = mediaRow(document, it);
+      row.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeMenu(true);
+        send(it);
+      });
+      row.setAttribute("role", "listitem");
+      ui.menu.appendChild(row);
+    }
+    ui.menu.scrollTop = scroll;
+    const rows = ui.menu.querySelectorAll(".odm-row");
+    if (focused >= 0 && rows[Math.min(focused, rows.length - 1)]) rows[Math.min(focused, rows.length - 1)].focus();
+  }
+
+  function closeMenu(refocus) {
+    ui.menu.hidden = true;
+    if (refocus) ui.dl.focus();
+    schedule();
   }
 
   function toggleMenu() {
     if (!ui.menu.hidden) {
-      ui.menu.hidden = true;
+      closeMenu(false);
       return;
     }
-    ui.menu.replaceChildren();
-    for (const it of orderMedia(items)) {
-      const row = document.createElement("div");
-      row.textContent = mediaLabel(it);
-      row.addEventListener("click", (e) => {
-        e.stopPropagation();
-        ui.menu.hidden = true;
-        send(it);
-      });
-      ui.menu.appendChild(row);
-    }
+    menuKey = "";
+    renderMenu();
     ui.menu.hidden = false;
+    const first = ui.menu.querySelector(".odm-row");
+    if (first) first.focus({ preventScroll: true });
+    schedule(); // the menu widens the box: place it again at once
   }
 
-  function flash(text) {
+  let flashTimer = 0;
+  function flash(text, ok) {
     ui.status.textContent = text;
+    ui.status.className = "status " + (ok ? "ok" : "err");
     ui.status.hidden = false;
-    setTimeout(() => (ui.status.hidden = true), 3000);
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => (ui.status.hidden = true), 3000);
   }
 
   function send(item) {
     chrome.runtime.sendMessage({ type: "odm-grab", item }, (reply) => {
-      if (chrome.runtime.lastError || !reply) flash("ODM is not reachable");
-      else if (!reply.ok) flash(`ODM: ${reply.error}`);
-      else flash(reply.message === "already in the list" ? "Already in ODM" : "Sent to ODM");
+      if (chrome.runtime.lastError || !reply) flash("ODM is not reachable", false);
+      else if (!reply.ok) flash(`ODM: ${reply.error}`, false);
+      else flash(reply.message === "already in the list" ? "Already in ODM" : "Sent to ODM", true);
     });
   }
 
@@ -126,7 +192,7 @@
     }
     if (!host) build();
     host.style.display = "";
-    ui.dl.textContent = label();
+    ui.dlText.textContent = label();
     const r = v.getBoundingClientRect();
     const w = host.getBoundingClientRect().width || 220;
     host.style.top = `${window.scrollY + r.top + 8}px`;
@@ -138,6 +204,9 @@
 
   function setItems(list) {
     items = Array.isArray(list) ? list : [];
+    // An open menu follows the list (a label filled in by a peek, a new
+    // stream), keeping its place.
+    if (ui && !ui.menu.hidden) renderMenu();
     schedule();
   }
 

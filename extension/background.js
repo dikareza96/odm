@@ -104,12 +104,22 @@ function streamFormat(url, mime) {
 }
 
 // normalizeMediaURL drops the fragment, which the server never sees, so
-// the same file reached as v.mp4 and v.mp4#t=10 is listed once. The query
-// is kept as is: no site's parameters are special.
+// the same file reached as v.mp4 and v.mp4#t=10 is listed once, and the
+// low-latency HLS reload parameters (_HLS_msn, _HLS_part, _HLS_skip, from
+// the HLS specification, RFC 8216bis): a player adds new ones on every
+// reload of the same playlist. Other query parameters are kept: no site's
+// parameters are special.
 function normalizeMediaURL(url) {
   try {
     const u = new URL(url);
     u.hash = "";
+    // Cut those pieces out of the raw query: URLSearchParams would write
+    // every other parameter back re-encoded, which breaks signatures
+    // computed over the query as it was.
+    if (u.search.includes("_HLS_")) {
+      const kept = u.search.slice(1).split("&").filter((p) => !p.startsWith("_HLS_"));
+      u.search = kept.length ? "?" + kept.join("&") : "";
+    }
     return u.toString();
   } catch {
     return url;
@@ -129,6 +139,65 @@ function totalSize(headers) {
   return Number.isFinite(len) && len > 0 ? len : 0;
 }
 
+// describePlaylist reads what a playlist offers from its text, for the
+// label in the menu and popup: { master, quality, live }. master is true
+// for an HLS master playlist or an MPD with several qualities (the one to
+// pick: it lets ODM offer every quality and the separate audio); quality
+// is like "All qualities, up to 1080p" or "One quality". truncated: only
+// the start was read, so an end marker cannot be looked for. Returns null
+// for text that is not a playlist of the given format.
+//
+// Gotcha: the text comes from any web page. Everything here is linear in
+// its length; a pattern like /<Tag[^>]*attr/ backtracks over the rest of
+// the text for every unclosed tag, which a hostile page can make cost
+// tens of seconds on the extension's only thread.
+function describePlaylist(text, format, truncated) {
+  let master = false;
+  let live = false;
+  let quality = "";
+  if (format === "HLS") {
+    if (!text.trimStart().startsWith("#EXTM3U")) return null;
+    let variants = 0;
+    let height = 0;
+    for (const line of text.split("\n")) {
+      if (!line.startsWith("#EXT-X-STREAM-INF")) continue;
+      variants++;
+      const m = /RESOLUTION=\d{1,6}x(\d{1,6})/.exec(line);
+      if (m) height = Math.max(height, Number(m[1]));
+    }
+    if (variants > 0) {
+      master = true;
+      quality = variants > 1 ? `All qualities${height ? `, up to ${height}p` : ""}` : `One quality${height ? `, ${height}p` : ""}`;
+    } else {
+      quality = "One quality";
+      live = !truncated && !text.includes("#EXT-X-ENDLIST") && !/#EXT-X-PLAYLIST-TYPE:[ \t]*VOD/.test(text);
+    }
+  } else if (format === "DASH") {
+    let isMPD = false;
+    const heights = new Set();
+    // Each piece between two "<" is one tag (up to its ">") plus text.
+    for (const piece of text.split("<")) {
+      const end = piece.indexOf(">");
+      const tag = end >= 0 ? piece.slice(0, end) : piece;
+      const name = /^[\w:.-]{0,64}/.exec(tag)[0].replace(/^.*:/, "");
+      if (name === "MPD") {
+        isMPD = true;
+        live = live || /\btype=["']dynamic["']/.test(tag);
+      } else if (name === "Representation" || name === "AdaptationSet") {
+        const m = /\bheight=["'](\d{1,6})["']/.exec(tag);
+        if (m) heights.add(Number(m[1]));
+      }
+    }
+    if (!isMPD) return null;
+    const max = Math.max(0, ...heights);
+    master = heights.size > 1;
+    quality = master ? `All qualities${max ? `, up to ${max}p` : ""}` : `One quality${max ? `, ${max}p` : ""}`;
+  } else {
+    return null;
+  }
+  return { master, quality, live };
+}
+
 // mergeMedia adds item to list (deduplicated by URL, keeping the larger
 // known size and the first time it was seen), newest first, capped. Over
 // the cap the oldest file goes first: a player keeps loading files, while
@@ -139,6 +208,9 @@ function mergeMedia(list, item) {
   if (old) {
     item = { ...item, size: Math.max(old.size, item.size) };
     if (old.at !== undefined && !(item.at <= old.at)) item.at = old.at;
+    for (const k of ["quality", "master", "live"]) {
+      if (old[k] !== undefined && item[k] === undefined) item[k] = old[k];
+    }
   }
   const next = [item, ...rest];
   while (next.length > MAX_MEDIA_PER_TAB) {
@@ -201,6 +273,85 @@ async function handOff(fields) {
 }
 
 const tabKey = (tabId) => `media:${tabId}`;
+
+// saveTab stores a tab's list and shows it: badge, and the frame's button.
+async function saveTab(tabId, frameId, list) {
+  await chrome.storage.session.set({ [tabKey(tabId)]: list });
+  setBadge(tabId, list.length);
+  const forFrame = list.filter((x) => x.frameId === frameId);
+  chrome.tabs.sendMessage(tabId, { type: "odm-media", items: forFrame }, { frameId })
+    .catch(() => { /* no content script in that frame (yet) */ });
+}
+
+// Peeks per tab since its page loaded: a page that keeps loading new
+// playlist addresses is not followed by a request for each.
+const MAX_PEEKS_PER_PAGE = 8;
+const peeks = new Map();
+
+// mayPeek decides whether a stream may be fetched for its label. Not in a
+// private window or a Firefox container: the background's fetch would use
+// the default cookie store and link that browsing to the normal one. Not
+// for sites the user excluded, and not beyond the per-page budget.
+async function mayPeek(tabId, url) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.incognito) return false;
+    if (tab.cookieStoreId && tab.cookieStoreId !== "firefox-default") return false;
+  } catch {
+    return false;
+  }
+  const cfg = await getConfig();
+  if (isExcluded(url, cfg.excludeSites)) return false;
+  const n = peeks.get(tabId) || 0;
+  if (n >= MAX_PEEKS_PER_PAGE) return false;
+  peeks.set(tabId, n + 1);
+  return true;
+}
+
+// Limits for peekPlaylist: a master playlist or MPD lists its qualities
+// at the start, while a long recorded playlist can run to megabytes.
+const PEEK_BYTES = 512 * 1024;
+const PEEK_MS = 5000;
+
+// peekPlaylist fetches a playlist once more, as the page did (with its
+// cookies), and describes it. null when it cannot be read: the label then
+// falls back to host and file name. Gotcha: this is an extra request; a
+// server that allows each URL only once would refuse ODM's own fetch of
+// it later, which is why it is made only for streams, once per URL.
+async function peekPlaylist(url, format) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PEEK_MS);
+  try {
+    const resp = await fetch(url, { credentials: "include", cache: "no-store", signal: ctl.signal });
+    if (!resp.ok || !resp.body) return null;
+    const reader = resp.body.getReader();
+    const chunks = [];
+    let got = 0;
+    let truncated = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      if (got >= PEEK_BYTES) {
+        truncated = true;
+        reader.cancel().catch(() => {});
+        break;
+      }
+    }
+    const bytes = new Uint8Array(got);
+    let off = 0;
+    for (const c of chunks) {
+      bytes.set(c, off);
+      off += c.length;
+    }
+    return describePlaylist(new TextDecoder().decode(bytes), format, truncated);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // grab sends one detected media item to ODM. The referrer is the page (or
 // frame) it was found on; streams get the page title as their name.
@@ -306,12 +457,27 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
       else if (d.initiator && d.initiator !== "null") item.origin = d.initiator;
       if (kind === "stream") item.format = streamFormat(d.url, mime);
       updateTab(d.tabId, async () => {
-        const next = mergeMedia(await tabMedia(d.tabId), item);
-        await chrome.storage.session.set({ [tabKey(d.tabId)]: next });
-        setBadge(d.tabId, next.length);
-        const forFrame = next.filter((x) => x.frameId === d.frameId);
-        chrome.tabs.sendMessage(d.tabId, { type: "odm-media", items: forFrame }, { frameId: d.frameId })
-          .catch(() => { /* no content script in that frame (yet) */ });
+        const before = await tabMedia(d.tabId);
+        const fresh = !before.some((x) => x.url === item.url);
+        const next = mergeMedia(before, item);
+        await saveTab(d.tabId, d.frameId, next);
+        // A stream seen for the first time is read once to tell the
+        // playlist with every quality from the others (a player reloads
+        // the same live playlist URL every few seconds: not read again).
+        // mayPeek may ask ODM for its settings: not awaited here, or a
+        // slow reply would hold up every later update of this tab.
+        if (fresh && kind === "stream") {
+          mayPeek(d.tabId, item.url).then((ok) => (ok ? peekPlaylist(item.url, item.format) : null)).then((info) => {
+            if (!info) return;
+            updateTab(d.tabId, async () => {
+              const list = await tabMedia(d.tabId);
+              const at = list.findIndex((x) => x.url === item.url);
+              if (at < 0) return; // gone: the page changed meanwhile
+              list[at] = { ...list[at], ...info };
+              await saveTab(d.tabId, d.frameId, list);
+            });
+          });
+        }
       });
     },
     { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
@@ -323,13 +489,17 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
     // Queued like the updates, or one still running for the old page
     // could write its list (and count) back after the reset.
     if (change.url) {
+      peeks.delete(tabId);
       updateTab(tabId, async () => {
         await chrome.storage.session.remove(tabKey(tabId));
         setBadge(tabId, 0);
       });
     }
   });
-  chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove(tabKey(tabId)));
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    peeks.delete(tabId);
+    chrome.storage.session.remove(tabKey(tabId));
+  });
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const tab = sender.tab;
@@ -371,5 +541,5 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { hasType, hostMatches, isExcluded, mediaKind, streamFormat, normalizeMediaURL, totalSize, mergeMedia, popupReferrer, DEFAULT_TYPES };
+  module.exports = { hasType, hostMatches, isExcluded, mediaKind, streamFormat, normalizeMediaURL, totalSize, mergeMedia, popupReferrer, describePlaylist, DEFAULT_TYPES };
 }

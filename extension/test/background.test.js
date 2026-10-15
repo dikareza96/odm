@@ -82,3 +82,55 @@ test("popupReferrer", () => {
   assert.equal(bg.popupReferrer({ frameId: 5 }, tab), tab.url);
   assert.equal(bg.popupReferrer({ frameId: 5 }, null), "");
 });
+
+test("describePlaylist", () => {
+  const master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080\nchunked.m3u8\n" +
+    "#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=852x480\n480p.m3u8\n";
+  assert.deepEqual(bg.describePlaylist(master, "HLS", false), { master: true, quality: "All qualities, up to 1080p", live: false });
+  const live = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\na.ts\n";
+  assert.deepEqual(bg.describePlaylist(live, "HLS", false), { master: false, quality: "One quality", live: true });
+  assert.deepEqual(bg.describePlaylist(live, "HLS", true), { master: false, quality: "One quality", live: false });
+  assert.equal(bg.describePlaylist(live + "#EXT-X-ENDLIST\n", "HLS", false).live, false);
+  // One variant with separate audio is still the playlist to pick.
+  const one = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",URI=\"a.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720,AUDIO=\"a\"\nv.m3u8\n";
+  assert.deepEqual(bg.describePlaylist(one, "HLS", false), { master: true, quality: "One quality, 720p", live: false });
+  const mpd = "<?xml version='1.0'?><mpd:MPD xmlns:mpd='urn:mpeg:dash:schema:mpd:2011' type='dynamic'><Period>" +
+    '<AdaptationSet height="720"><Representation id="a"/></AdaptationSet><AdaptationSet><Representation id="b" height="1080"/></AdaptationSet></Period></mpd:MPD>';
+  assert.deepEqual(bg.describePlaylist(mpd, "DASH", false), { master: true, quality: "All qualities, up to 1080p", live: true });
+  assert.equal(bg.describePlaylist("<html>error</html>", "HLS", false), null);
+  assert.equal(bg.describePlaylist("#EXTM3U", "DASH", false), null);
+});
+
+test("describePlaylist stays linear on hostile input", () => {
+  // Compares 128 KB with 512 KB rather than against a clock: quadratic
+  // work grows 16 times for 4 times the input, linear work about 4 times.
+  const time = (unit, size) => {
+    const text = (unit.startsWith("#") ? "#EXTM3U\n" : "") + unit.repeat(Math.ceil(size / unit.length));
+    const t0 = process.hrtime.bigint();
+    for (let i = 0; i < 3; i++) bg.describePlaylist(text, unit.startsWith("#") ? "HLS" : "DASH", true);
+    return Number(process.hrtime.bigint() - t0) / 3e6;
+  };
+  for (const unit of ["<Representation ", "<MPD ", "<mpd:MPD type=", "#EXT-X-STREAM-INF:RESOLUTION=1x"]) {
+    const small = Math.max(time(unit, 128 * 1024), 1);
+    const big = time(unit, 512 * 1024);
+    assert.ok(big < small * 8 && big < 2000, `${unit.trim()}: ${small.toFixed(1)} ms for 128 KB, ${big.toFixed(1)} ms for 512 KB`);
+  }
+});
+
+test("normalizeMediaURL drops low-latency HLS reload parameters", () => {
+  assert.equal(bg.normalizeMediaURL("https://cdn.example/live.m3u8?token=a&_HLS_msn=120&_HLS_part=3&_HLS_skip=YES"),
+    "https://cdn.example/live.m3u8?token=a");
+  // Everything else stays byte for byte (signed queries).
+  assert.equal(bg.normalizeMediaURL("https://cdn.example/l.m3u8?hdnts=exp=1~acl=/*~hmac=ab&q=a%20b&_HLS_msn=3"),
+    "https://cdn.example/l.m3u8?hdnts=exp=1~acl=/*~hmac=ab&q=a%20b");
+  assert.equal(bg.normalizeMediaURL("https://cdn.example/l.m3u8?_HLS_msn=3"), "https://cdn.example/l.m3u8");
+});
+
+test("mergeMedia keeps what a peek learned", () => {
+  const first = { url: "u", kind: "stream", size: 0, at: 1, master: true, quality: "All qualities", live: true };
+  const next = bg.mergeMedia([first], { url: "u", kind: "stream", size: 0, at: 5 });
+  assert.equal(next[0].master, true);
+  assert.equal(next[0].quality, "All qualities");
+  assert.equal(next[0].live, true);
+  assert.equal(next[0].at, 1);
+});
