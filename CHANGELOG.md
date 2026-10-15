@@ -6,6 +6,12 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- The extension sends a media address as the page requested it, without
+  removing any site's byte-range parameters; only the `#fragment` is
+  dropped.
+
 ## [0.3.1] - 2026-10-15
 
 ### Fixed

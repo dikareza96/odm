@@ -103,16 +103,13 @@ function streamFormat(url, mime) {
   return "";
 }
 
-// normalizeMediaURL turns a player's partial request into the whole file.
-// Google's video hosts take the byte range as query parameters; without
-// them the same URL serves the complete file.
+// normalizeMediaURL drops the fragment, which the server never sees, so
+// the same file reached as v.mp4 and v.mp4#t=10 is listed once. The query
+// is kept as is: no site's parameters are special.
 function normalizeMediaURL(url) {
   try {
     const u = new URL(url);
     u.hash = "";
-    if (u.hostname.endsWith(".googlevideo.com")) {
-      for (const p of ["range", "rn", "rbuf"]) u.searchParams.delete(p);
-    }
     return u.toString();
   } catch {
     return url;
