@@ -6,6 +6,13 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- The extension's toolbar icon shows how many videos, audio files and
+  streams the page has loaded, and its popup lists them (from every frame,
+  with how long ago each was seen) to send one to ODM. This covers pages
+  where the in-page button does not appear.
+
 ### Changed
 
 - The extension sends a media address as the page requested it, without

@@ -59,6 +59,8 @@ queues. It runs as a desktop app, or headless with a JSON API.
   installed (next to ODM, on PATH, or chosen in Options > Downloads, which
   also shows the ffmpeg version ODM found). Live streams are not supported yet. DRM-protected video
   is not supported and never will be.
+- The extension's toolbar icon counts the media a page has loaded, and its
+  popup lists them (from every frame) for players the button cannot find.
 - A clipboard monitor queues downloadable URLs you copy. You can turn it on
   or off at any time.
 

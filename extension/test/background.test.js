@@ -73,3 +73,12 @@ test("streamFormat", () => {
   assert.equal(bg.streamFormat("https://cdn/x/m.mpd?t=1", "text/plain"), "DASH");
   assert.equal(bg.streamFormat("https://cdn/x/video", "video/mp4"), "");
 });
+
+test("popupReferrer", () => {
+  const tab = { url: "https://site.example/watch?v=1" };
+  assert.equal(bg.popupReferrer({ frameId: 0, origin: "https://site.example" }, tab), tab.url);
+  assert.equal(bg.popupReferrer({ frameId: 5, page: "https://player.example/embed/9" }, tab), "https://player.example/embed/9");
+  assert.equal(bg.popupReferrer({ frameId: 5, origin: "https://player.example" }, tab), "https://player.example/");
+  assert.equal(bg.popupReferrer({ frameId: 5 }, tab), tab.url);
+  assert.equal(bg.popupReferrer({ frameId: 5 }, null), "");
+});
