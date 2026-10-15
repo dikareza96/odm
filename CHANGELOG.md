@@ -6,6 +6,8 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-15
+
 ### Added
 
 - The extension's toolbar icon shows how many videos, audio files and
@@ -209,7 +211,8 @@ All notable changes to ODM are documented here. The format is based on
   instance); no TCP port is opened unless `-serve` is given, and that
   listener requires a per-run token and rejects foreign origins.
 
-[Unreleased]: https://github.com/troke12/odm/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/troke12/odm/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/troke12/odm/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/troke12/odm/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/troke12/odm/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/troke12/odm/compare/v0.1.1...v0.2.0
