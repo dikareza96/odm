@@ -188,6 +188,7 @@ func (d *Download) livePlaylists(ctx context.Context, job StreamJob) ([]string, 
 func (d *Download) recordLive(ctx context.Context) error {
 	d.mu.Lock()
 	d.Stream.Live = true
+	d.liveBehind, d.streamSkipped = false, 0
 	job := *d.Stream
 	d.mu.Unlock()
 	urls, err := d.livePlaylists(ctx, job)
@@ -274,10 +275,12 @@ func (d *Download) recordLive(ctx context.Context) error {
 			if err := d.saveLiveState(st); err != nil {
 				return err
 			}
+			fetchStart := time.Now()
 			if err := r.fetch(ctx, round); err != nil {
 				stopErr = err
 				break
 			}
+			r.checkPace(time.Since(fetchStart))
 		}
 		// Only new segments count as progress: a lost init fetched again
 		// must not hold off the stall limit.
@@ -332,7 +335,11 @@ func (d *Download) recordLive(ctx context.Context) error {
 		// What was recorded is kept as the finished file; the reason the
 		// recording ended early stays visible with it.
 		d.mu.Lock()
-		d.Err = "recording ended early: " + stopErr.Error()
+		note := "recording ended early: " + stopErr.Error()
+		if d.Err != "" { // e.g. kept as .ts
+			note += "; " + d.Err
+		}
+		d.Err = note
 		d.mu.Unlock()
 	}
 	return nil
@@ -354,6 +361,32 @@ type liveRecorder struct {
 	inits     map[int]map[int]*media.HLSMap // see initURLs
 	initTries map[string]int                // fetch rounds per lost init
 	regressed []int                         // reloads in a row whose numbers went back, per track
+	slow      int                           // rounds in a row fetched slower than they play
+}
+
+// checkPace compares how long a round took to fetch with how long its new
+// video plays. Two slow rounds in a row mark the recording as behind: the
+// connection cannot keep up with this quality, and segments will leave the
+// playlist before they are fetched. One fast round clears it.
+func (r *liveRecorder) checkPace(took time.Duration) {
+	var plays time.Duration
+	for _, j := range r.lastTaken {
+		if j.track == 0 && !j.init {
+			plays += j.p.dur
+		}
+	}
+	if plays <= 0 {
+		return
+	}
+	if took > plays*11/10 {
+		r.slow++
+	} else {
+		r.slow = 0
+	}
+	r.d.mu.Lock()
+	r.d.liveBehind = r.slow >= 2
+	r.d.mu.Unlock()
+	r.d.notify(false)
 }
 
 // resolveAgain re-reads the master playlist for fresh media playlist URLs
@@ -372,8 +405,9 @@ func (r *liveRecorder) resolveAgain(ctx context.Context) {
 // container the recording becomes.
 func (r *liveRecorder) prepare() error {
 	d := r.d
+	ext := outputExt(r.tracks()) // looks for ffmpeg: not under d.mu
 	d.mu.Lock()
-	d.FileName = streamName(d.FileName, outputExt(r.tracks()))
+	d.FileName = streamName(d.FileName, ext)
 	d.mu.Unlock()
 	if err := d.openTarget(true); err != nil {
 		return err
@@ -497,7 +531,7 @@ func (r *liveRecorder) take(ti int, m *media.HLSMedia) []pieceJob {
 		n := len(t.SegInit)
 		t.SegInit = append(t.SegInit, idx)
 		jobs = append(jobs, pieceJob{track: ti, name: strconv.Itoa(n),
-			p: &piece{url: s.URL, rng: s.Range, key: s.Key, seq: s.Sequence}})
+			p: &piece{url: s.URL, rng: s.Range, key: s.Key, seq: s.Sequence, dur: s.Duration}})
 		t.LastSeq, t.Started = s.Sequence, true
 	}
 	return jobs
@@ -607,6 +641,11 @@ func (r *liveRecorder) fetch(ctx context.Context, jobs []pieceJob) error {
 				d.notify(false)
 			case errors.Is(err, errLocalNetwork):
 				once.Do(func() { hardErr = err })
+			case ctx.Err() == nil && !j.init:
+				d.mu.Lock()
+				d.streamSkipped++
+				d.mu.Unlock()
+				d.notify(false)
 			}
 		}(j)
 	}
@@ -661,6 +700,8 @@ func (r *liveRecorder) countExisting() {
 	}
 	r.d.mu.Lock()
 	r.d.streamDone, r.d.streamHave, r.d.streamSegs = done, have, r.recorded()
+	// Pieces without a file at this point were given up on earlier.
+	r.d.streamSkipped = r.recorded() - have
 	r.d.mu.Unlock()
 	r.d.updateEstimate()
 }

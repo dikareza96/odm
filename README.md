@@ -59,7 +59,9 @@ queues. It runs as a desktop app, or headless with a JSON API.
   installed (next to ODM, on PATH, or chosen in Options > Downloads, which
   also shows the ffmpeg version ODM found). A live HLS stream is recorded
   until you stop the download (Pause or Stop), the broadcast ends, or
-  nothing new arrives for a while; live DASH is not supported. DRM-protected video
+  nothing new arrives for a while; live DASH is not supported. With ffmpeg,
+  streams made of MPEG-TS segments are saved as MP4 (remuxed, not
+  re-encoded); without it they stay `.ts`. DRM-protected video
   is not supported and never will be.
 - The extension's toolbar icon counts the media a page has loaded, and its
   popup lists them (from every frame) for players the button cannot find.

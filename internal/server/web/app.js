@@ -224,7 +224,7 @@ function renderRow(d) {
   const status = document.createElement("td");
   const badge = document.createElement("span");
   badge.className = "status";
-  badge.textContent = recording(d) ? "recording" : d.status;
+  badge.textContent = recording(d) ? (d.behind ? "recording (too slow)" : "recording") : d.status;
   status.appendChild(badge);
 
   const eta = document.createElement("td");
@@ -388,7 +388,8 @@ function renderProgress() {
   $("pgTitle").textContent = `${recording(d) ? "Recording " : sized(d) ? d.progress.toFixed(0) + "% " : ""}${d.file_name || d.url}`;
   $("pgUrl").textContent = d.url;
   $("pgStatus").textContent = d.error ? `${d.status} — ${d.error}` :
-    recording(d) ? "Recording live stream…" : (d.status === "downloading" ? "Receiving data…" : d.status);
+    recording(d) ? (d.behind ? "Recording, but slower than the stream: choose a lower quality" : "Recording live stream…") :
+    (d.status === "downloading" ? "Receiving data…" : d.status);
   $("pgSize").textContent = d.total > 0 ? fmtBytes(d.total) : "unknown";
   $("pgDone").textContent = `${fmtBytes(d.done)}${sized(d) ? ` (${d.progress.toFixed(2)} %)` : ""}`;
   $("pgRate").textContent = d.status === "downloading" ? fmtRate(d.speed) : "-";

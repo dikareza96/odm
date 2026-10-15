@@ -18,6 +18,9 @@ jobs:
       - run: go vet ./...
       - name: Extension tests
         run: node --test extension/test/*.test.js
+      # The tests that join or remux real streams skip without ffmpeg.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: go test ./...
       - name: Build CLI
         run: CGO_ENABLED=0 go build -o /tmp/odm ./cmd/odm

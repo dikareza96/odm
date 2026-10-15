@@ -228,7 +228,7 @@ func TestStreamDASHNeedsFFmpeg(t *testing.T) {
 	defer srv.Close()
 
 	setFFmpegPath(filepath.Join(t.TempDir(), "no-ffmpeg-here"))
-	defer setFFmpegPath("")
+	defer setFFmpegPath(noFFmpeg)
 	d := newStreamDownload(t, srv.Client(), 4, StreamJob{Kind: media.KindDASH, Manifest: srv.URL + "/m.mpd"})
 	d.Start(context.Background())
 	info := d.Info()
@@ -319,7 +319,7 @@ func TestStreamDASHMergeRealFFmpeg(t *testing.T) {
 	defer srv.Close()
 
 	setFFmpegPath(bin)
-	defer setFFmpegPath("")
+	defer setFFmpegPath(noFFmpeg)
 	d := newStreamDownload(t, srv.Client(), 4, StreamJob{Kind: media.KindDASH, Manifest: srv.URL + "/m.mpd"})
 	d.Start(context.Background())
 	info := d.Info()

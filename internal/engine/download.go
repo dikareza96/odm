@@ -75,6 +75,10 @@ type Download struct {
 	// Segmented downloads: bytes on disk, and segments present / total.
 	streamDone             int64
 	streamHave, streamSegs int
+	// Live recordings: segments given up on, and whether fetching falls
+	// behind the stream (live.go checkPace).
+	streamSkipped int
+	liveBehind    bool
 	// guarded is client wrapped by guardLocal for stream requests. It is
 	// rebuilt when the client or the manifest (Readdress) changes, since
 	// its verdict on the manifest is cached.
@@ -854,7 +858,8 @@ func (d *Download) infoLocked() Info {
 		RangeOK: d.RangeOK, Category: d.category(), Queue: d.Queue, Description: d.Description, Order: d.Order, Chunks: chunks,
 		SpeedLimit: d.SpeedLimit, OpenWhenDone: d.OpenWhenDone,
 		Stream: stream, Segments: d.streamSegs, SegmentsDone: d.streamHave,
-		Live:      d.Stream != nil && d.Stream.Live,
+		Live:            d.Stream != nil && d.Stream.Live,
+		SegmentsSkipped: d.streamSkipped, Behind: d.liveBehind,
 		CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
 }

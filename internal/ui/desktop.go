@@ -847,6 +847,9 @@ func statusText(d engine.Info) string {
 		if d.Live {
 			// Total follows Done while recording: a percentage would
 			// read 100% throughout.
+			if d.Behind {
+				return "Recording (too slow)"
+			}
 			return "Recording"
 		}
 		if d.Total > 0 {

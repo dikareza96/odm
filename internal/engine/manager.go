@@ -921,6 +921,7 @@ func (m *Manager) RemoveWithFile(id string, deleteFile bool) bool {
 	// Let workers (and a stream's assembly) close their files first; on
 	// Windows an open file cannot be deleted and the error is ignored.
 	d.waitIdle(10 * time.Second)
+	work := d.workDir() // a stream's segments; its own lock
 	d.mu.Lock()
 	dir, name := d.Dir, d.FileName
 	f := d.file
@@ -943,7 +944,7 @@ func (m *Manager) RemoveWithFile(id string, deleteFile bool) bool {
 	if name != "" {
 		_ = os.Remove(filepath.Join(dir, name+".odmpart"))
 		// A stream keeps its segments in a folder as big as the video.
-		_ = os.RemoveAll(filepath.Join(dir, name+".odmparts"))
+		_ = os.RemoveAll(work)
 		if deleteFile {
 			_ = os.Remove(filepath.Join(dir, name))
 		}

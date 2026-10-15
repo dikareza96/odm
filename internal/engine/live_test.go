@@ -109,6 +109,9 @@ func TestLiveSkipsLostSegment(t *testing.T) {
 	if got := string(readResult(t, d)); got != "[s0][s1][s3][s4]" {
 		t.Fatalf("recording %q", got)
 	}
+	if info := d.Info(); info.SegmentsSkipped != 1 || info.SegmentsDone != 4 || info.Segments != 5 {
+		t.Fatalf("counts %d done, %d skipped of %d", info.SegmentsDone, info.SegmentsSkipped, info.Segments)
+	}
 }
 
 func TestLiveStallEnds(t *testing.T) {
@@ -226,7 +229,7 @@ func TestLiveTracksAdvanceTogether(t *testing.T) {
 	d := newStreamDownload(t, srv.Client(), 1, StreamJob{Kind: media.KindHLS, Manifest: srv.URL + "/v.m3u8",
 		Video: srv.URL + "/v.m3u8", Audio: srv.URL + "/a.m3u8"})
 	setFFmpegPath(filepath.Join(t.TempDir(), "no-ffmpeg-here"))
-	defer setFFmpegPath("")
+	defer setFFmpegPath(noFFmpeg)
 	d.Start(context.Background())
 	// Joining needs ffmpeg, absent here: the failure must be reported, not
 	// shown as a pause, and every segment of both tracks must be on disk.
@@ -387,7 +390,7 @@ func TestLiveRemoveDuringAssembly(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "ffmpeg")
 	os.WriteFile(bin, []byte("#!/bin/sh\nsleep 30\n"), 0o755)
 	setFFmpegPath(bin)
-	defer setFFmpegPath("")
+	defer setFFmpegPath(noFFmpeg)
 
 	srv := twoTrackServer(t, 1000) // does not end on its own
 	m := NewManager(DefaultSettings(t.TempDir()), "")
@@ -499,4 +502,53 @@ func TestLiveStateReadErrors(t *testing.T) {
 	if got := string(readResult(t, d)); got != "[s3]" {
 		t.Fatalf("recording %q", got)
 	}
+}
+
+// Segments that take longer to fetch than they play mark the recording as
+// behind; keeping up clears it.
+func TestLivePace(t *testing.T) {
+	fastLive(t)
+	var mu sync.Mutex
+	reloads := 0
+	slow := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/live.m3u8" {
+			mu.Lock()
+			s := slow
+			mu.Unlock()
+			if s {
+				time.Sleep(60 * time.Millisecond) // a 0.02 s segment
+			}
+			fmt.Fprint(w, "x")
+			return
+		}
+		mu.Lock()
+		reloads++
+		n := reloads
+		mu.Unlock()
+		fmt.Fprintf(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:%d\n#EXTINF:0.02,\ns%d.ts\n", n, n)
+	}))
+	defer srv.Close()
+	d := newStreamDownload(t, srv.Client(), 1, StreamJob{Kind: media.KindHLS, Manifest: srv.URL + "/live.m3u8"})
+	done := make(chan struct{})
+	go func() { d.Start(context.Background()); close(done) }()
+	waitFor := func(what string, cond func(Info) bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !cond(d.Info()) {
+			if time.Now().After(deadline) {
+				d.Pause()
+				<-done
+				t.Fatalf("never %s", what)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	waitFor("behind", func(i Info) bool { return i.Behind })
+	mu.Lock()
+	slow = false
+	mu.Unlock()
+	waitFor("caught up", func(i Info) bool { return !i.Behind })
+	d.Pause()
+	<-done
 }

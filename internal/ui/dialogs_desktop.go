@@ -1600,6 +1600,23 @@ func detailsHeight(v *progressView) float32 {
 	return v.top.MinSize().Height + v.details.MinSize().Height + 30
 }
 
+// liveSegmentsText is "12 recorded, 3 downloading, 1 skipped" for a
+// recording, "" before anything was taken. Downloading counts segments
+// taken from the playlist but neither on disk nor given up on yet.
+func liveSegmentsText(d engine.Info) string {
+	if d.Segments <= 0 {
+		return ""
+	}
+	text := fmt.Sprintf("%d recorded", d.SegmentsDone)
+	if n := d.Segments - d.SegmentsDone - d.SegmentsSkipped; n > 0 {
+		text += fmt.Sprintf(", %d downloading", n)
+	}
+	if d.SegmentsSkipped > 0 {
+		text += fmt.Sprintf(", %d skipped", d.SegmentsSkipped)
+	}
+	return text
+}
+
 // segmentsText is "12 of 340", or "" before a run has read the playlist.
 func segmentsText(d engine.Info) string {
 	if d.Segments <= 0 {
@@ -1647,6 +1664,9 @@ func (a *application) updateProgressWindow(id string) {
 	}
 	if v.live {
 		status = "Recording live stream…"
+		if d.Behind {
+			status = "Recording, but slower than the stream: choose a lower quality"
+		}
 	}
 	if d.Error != "" {
 		status += " — " + d.Error
@@ -1690,10 +1710,7 @@ func (a *application) updateProgressWindow(id string) {
 			segs, have, text = 1, 1, "complete"
 		}
 		if d.Live && d.Status != engine.StatusComplete {
-			text = ""
-			if d.SegmentsDone > 0 {
-				text = fmt.Sprintf("%d recorded", d.SegmentsDone)
-			}
+			text = liveSegmentsText(d)
 			segs, have = 0, 0 // nothing to fill toward
 		}
 		v.mapLabel.SetText("Segments: " + dash(text))

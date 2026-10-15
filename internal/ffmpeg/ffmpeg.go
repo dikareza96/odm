@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,8 +103,39 @@ func mergeArgs(video, audio, tmp, format string) []string {
 // caller removes them once it no longer needs them for a retry.
 func Merge(ctx context.Context, bin, video, audio, out string) error {
 	tmp := out + ".merging"
-	cmd := exec.CommandContext(ctx, bin, mergeArgs(video, audio, tmp, muxer(out))...)
+	return run(ctx, bin, mergeArgs(video, audio, tmp, muxer(out)), nil, tmp, out, "merge")
+}
+
+// remuxArgs copies the video and audio of an MPEG-TS read from standard
+// input into another container. Only audio and video are mapped: an
+// MPEG-TS stream often carries a timed ID3 metadata track, which MP4
+// cannot hold and would make ffmpeg fail. No -nostdin here: the input is
+// standard input (ffmpeg turns off its keyboard handling by itself then).
+func remuxArgs(tmp, format string) []string {
+	return []string{
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-f", "mpegts", "-i", "pipe:0",
+		"-map", "0:v?", "-map", "0:a?",
+		"-c", "copy",
+		"-f", format, tmp,
+	}
+}
+
+// RemuxTS rewrites the MPEG-TS read from in into the container out's name
+// asks for, without re-encoding (a recording into MP4, which more players
+// open and seek in). Reading from in rather than a file saves writing the
+// joined MPEG-TS to disk first.
+func RemuxTS(ctx context.Context, bin string, in io.Reader, out string) error {
+	tmp := out + ".remuxing"
+	return run(ctx, bin, remuxArgs(tmp, muxer(out)), in, tmp, out, "remux")
+}
+
+// run runs ffmpeg writing tmp and renames it to out on success. On failure
+// tmp is removed and the error carries the end of ffmpeg's message.
+func run(ctx context.Context, bin string, args []string, stdin io.Reader, tmp, out, what string) error {
+	cmd := exec.CommandContext(ctx, bin, args...)
 	hide(cmd)
+	cmd.Stdin = stdin
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -118,7 +150,7 @@ func Merge(ctx context.Context, bin, video, audio, out string) error {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return fmt.Errorf("merge failed: %s", msg)
+		return fmt.Errorf("%s failed: %s", what, msg)
 	}
 	if err := os.Rename(tmp, out); err != nil {
 		_ = os.Remove(tmp)

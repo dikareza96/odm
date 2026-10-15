@@ -18,7 +18,13 @@ All notable changes to ODM are documented here. The format is based on
   while. A segment that cannot be fetched before it leaves the playlist is
   skipped. If ODM closes mid-way, Resume continues the recording after a
   gap. The New Download window marks such a stream as live. Live DASH is
-  still refused.
+  still refused. The progress window counts segments recorded,
+  downloading and skipped, and warns when the connection is slower than
+  the stream plays, so a lower quality should be picked.
+- A stream made of MPEG-TS segments (most HLS) is saved as MP4 when ffmpeg
+  is found, remuxed without re-encoding; MP4 opens and seeks in more
+  players. Without ffmpeg, or if the remux fails, it stays a `.ts` file
+  and the progress window says why.
 
 ### Security
 

@@ -73,6 +73,9 @@ type StreamJob struct {
 	// continues it.
 	Live      bool `json:"live,omitempty"`
 	Recording bool `json:"recording,omitempty"`
+	// WorkName is the file name the work folder was made under, when the
+	// file was renamed since (kept as .ts instead of .mp4, see keepTS).
+	WorkName string `json:"work_name,omitempty"`
 	// DASH: the Representation IDs. Empty means "pick the best"; the pick
 	// is written back here on the first run.
 	VideoRep string `json:"video_rep,omitempty"`
@@ -106,6 +109,7 @@ type piece struct {
 	rng *media.ByteRange
 	key *media.HLSKey
 	seq int64
+	dur time.Duration // playing time; set for live segments only
 }
 
 // streamTrack is one elementary stream (video, audio, or both muxed).
@@ -653,6 +657,13 @@ func dashExt(r *media.DASHRepresentation) string {
 // outputExt is the container of the finished file.
 func outputExt(tracks []*streamTrack) string {
 	if len(tracks) == 1 {
+		// An MPEG-TS track is remuxed into MP4 when ffmpeg is there (see
+		// remuxTS); without it the file stays MPEG-TS.
+		if tracks[0].ext == "ts" {
+			if _, err := ffmpeg.Locate(ffmpegConfigured()); err == nil {
+				return "mp4"
+			}
+		}
 		return tracks[0].ext
 	}
 	// Two tracks are joined by ffmpeg: WebM when both are WebM, else MP4
@@ -684,6 +695,7 @@ func (d *Download) prepareStream(tracks []*streamTrack) error {
 	for i, t := range tracks {
 		counts[i] = len(t.segs)
 	}
+	ext := outputExt(tracks) // looks for ffmpeg: not under d.mu
 	d.mu.Lock()
 	prev := d.Stream.Counts
 	fresh := len(prev) == 0
@@ -692,7 +704,7 @@ func (d *Download) prepareStream(tracks []*streamTrack) error {
 		return errors.New("the stream changed since this download started; remove it and add it again")
 	}
 	if fresh {
-		d.FileName = streamName(d.FileName, outputExt(tracks))
+		d.FileName = streamName(d.FileName, ext)
 	}
 	d.mu.Unlock()
 
@@ -775,6 +787,9 @@ func fileSize(p string) int64 {
 func (d *Download) workDir() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.Stream != nil && d.Stream.WorkName != "" {
+		return filepath.Join(d.Dir, d.Stream.WorkName+".odmparts")
+	}
 	return filepath.Join(d.Dir, d.FileName+".odmparts")
 }
 
@@ -1182,6 +1197,10 @@ func (d *Download) assembleStream(ctx context.Context, tracks []*streamTrack) er
 		return err
 	}
 
+	if len(tracks) == 1 && tracks[0].ext == "ts" && strings.EqualFold(ext, ".mp4") {
+		_ = out.Close()
+		return d.remuxTS(ctx, target, tracks[0])
+	}
 	if len(tracks) == 1 {
 		err := d.concat(ctx, out, 0, tracks[0])
 		if cerr := out.Close(); err == nil {
@@ -1218,6 +1237,73 @@ func (d *Download) assembleStream(ctx context.Context, tracks []*streamTrack) er
 		return err
 	}
 	return os.Rename(merged, target)
+}
+
+// remuxTS joins an MPEG-TS track and remuxes it into the MP4 at target,
+// piping the joined track into ffmpeg so it is never written to disk
+// (segments plus the MP4 already take twice the recording's size). When
+// ffmpeg has gone missing since the file was named, or the remux fails,
+// the MPEG-TS is kept under a .ts name instead, with the reason in Err:
+// losing the download over the container would be worse.
+func (d *Download) remuxTS(ctx context.Context, target string, t *streamTrack) error {
+	bin, why := ffmpeg.Locate(ffmpegConfigured())
+	if why == nil {
+		remuxed := filepath.Join(d.workDir(), "remuxed.mp4")
+		pr, pw := io.Pipe()
+		joined := make(chan error, 1)
+		go func() {
+			err := d.concat(ctx, pw, 0, t)
+			pw.CloseWithError(err)
+			joined <- err
+		}()
+		why = ffmpeg.RemuxTS(ctx, bin, pr, remuxed)
+		pr.CloseWithError(errors.New("ffmpeg stopped reading")) // unblocks concat
+		jerr := <-joined
+		if why == nil && jerr == nil {
+			return os.Rename(remuxed, target)
+		}
+		_ = os.Remove(remuxed)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if why == nil {
+			if !errors.Is(jerr, io.ErrClosedPipe) {
+				return jerr // joining failed (a missing piece, a read error)
+			}
+			why = jerr
+		}
+	}
+	return d.keepTS(ctx, target, t, why)
+}
+
+// keepTS joins the MPEG-TS track under a .ts name in place of the .mp4 the
+// download was claimed as. The work folder keeps the name it was made
+// under (Stream.WorkName), so it is still found after a restart.
+func (d *Download) keepTS(ctx context.Context, target string, t *streamTrack, why error) error {
+	d.mu.Lock()
+	dir, name := d.Dir, d.FileName
+	d.mu.Unlock()
+	tsName, f, err := claimName(dir, strings.TrimSuffix(name, filepath.Ext(name))+".ts")
+	if err != nil {
+		return err
+	}
+	err = d.concat(ctx, f, 0, t)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(filepath.Join(dir, tsName) + ".odmpart")
+		return err
+	}
+	_ = os.Remove(target)
+	d.mu.Lock()
+	if d.Stream.WorkName == "" {
+		d.Stream.WorkName = name
+	}
+	d.FileName = tsName
+	d.Err = "saved as MPEG-TS (.ts): " + why.Error()
+	d.mu.Unlock()
+	return nil
 }
 
 // concat writes a track's pieces to w in order, repeating the init

@@ -89,7 +89,12 @@ type Info struct {
 	Segments     int `json:"segments,omitempty"`
 	SegmentsDone int `json:"segments_done"`
 	// Live is a live stream being recorded: Pause stops and finishes it.
-	Live      bool      `json:"live,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// SegmentsSkipped counts its segments given up on (gaps in the file);
+	// Behind means fetching is slower than the stream plays, so a lower
+	// quality would keep up.
+	Live            bool      `json:"live,omitempty"`
+	SegmentsSkipped int       `json:"segments_skipped,omitempty"`
+	Behind          bool      `json:"behind,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
