@@ -6,6 +6,15 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-15
+
+### Fixed
+
+- A paused or failed download closes its partial file. Resuming it in the
+  same session no longer leaves an earlier handle open, which on Windows
+  made the final rename fail ("being used by another process"). This also
+  affected HLS and DASH streams. (#12, by @rigaz29)
+
 ## [0.3.0] - 2026-10-15
 
 ### Added
@@ -33,13 +42,6 @@ All notable changes to ODM are documented here. The format is based on
 
 - Removing a download together with its file waits for the transfer to
   stop first, so the file is not still open (Windows refused to delete it).
-
-### Fixed
-
-- A paused or failed download closes its partial file. Resuming it in the
-  same session no longer leaves an earlier handle open, which on Windows
-  made the final rename fail ("being used by another process"). This also
-  affected HLS and DASH streams.
 
 ## [0.2.0] - 2026-10-13
 
@@ -157,7 +159,8 @@ All notable changes to ODM are documented here. The format is based on
   instance); no TCP port is opened unless `-serve` is given, and that
   listener requires a per-run token and rejects foreign origins.
 
-[Unreleased]: https://github.com/troke12/odm/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/troke12/odm/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/troke12/odm/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/troke12/odm/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/troke12/odm/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/troke12/odm/compare/v0.1.0...v0.1.1
