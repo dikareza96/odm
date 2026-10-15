@@ -12,6 +12,13 @@ All notable changes to ODM are documented here. The format is based on
   streams the page has loaded, and its popup lists them (from every frame,
   with how long ago each was seen) to send one to ODM. This covers pages
   where the in-page button does not appear.
+- Live HLS streams are recorded: ODM keeps reloading the playlist and
+  saving new segments until the download is stopped (Pause or Stop
+  finishes the file), the broadcast ends, or nothing new arrives for a
+  while. A segment that cannot be fetched before it leaves the playlist is
+  skipped. If ODM closes mid-way, Resume continues the recording after a
+  gap. The New Download window marks such a stream as live. Live DASH is
+  still refused.
 
 ### Security
 
