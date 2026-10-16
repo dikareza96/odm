@@ -10,6 +10,10 @@ All notable changes to ODM are documented here. The format is based on
 
 - The main window's title shows the version ("Ochi Download Manager
   0.4.1").
+- The menu bar on Windows and Linux is ODM's own: titles with room around
+  them and a highlight under the pointer, and roomier drop-down menus with
+  a lifted background. macOS keeps its system menu bar. View offers
+  "Show categories" while the sidebar is hidden.
 
 ### Fixed
 

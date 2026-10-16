@@ -354,6 +354,9 @@ func (a *application) build() {
 	toolScroll := container.NewHScroll(container.New(layout.NewCustomPaddedLayout(2, 2, 4, 4), toolbar))
 	toolScroll.SetMinSize(fyne.NewSize(200, toolbar.MinSize().Height+4))
 	top := container.NewVBox(toolScroll, widget.NewSeparator())
+	if !useNativeMenu() {
+		top = container.NewVBox(newMenuBar(a.win, a.buildMenu), toolScroll, widget.NewSeparator())
+	}
 
 	base := newDownloadTable(a)
 	base.OnSelected = func(id widget.TableCellID) {
@@ -427,7 +430,9 @@ func (a *application) build() {
 	a.status = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{})
 	body := container.New(layout.NewCustomPaddedLayout(4, 0, 4, 4), a.split)
 	a.win.SetContent(container.NewBorder(top, a.status, nil, nil, body))
-	a.win.SetMainMenu(a.buildMenu())
+	if useNativeMenu() {
+		a.win.SetMainMenu(a.buildMenu())
+	}
 	a.win.Canvas().AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyN, Modifier: fyne.KeyModifierShortcutDefault}, a.handleShortcut)
 	// Keys typed with nothing focused (e.g. right after start) still reach
 	// the list's handler.
@@ -598,8 +603,14 @@ func (a *application) buildMenu() *fyne.MainMenu {
 		&fyne.MenuItem{IsSeparator: true},
 		fyne.NewMenuItem("Options…", func() { a.openOptionsTab(0) }),
 	)
+	// Built again each time the bar opens a menu, so this follows the
+	// sidebar.
+	sidebarLabel := "Hide categories"
+	if a.split != nil && a.split.Offset <= 0.001 {
+		sidebarLabel = "Show categories"
+	}
 	view := fyne.NewMenu("View",
-		fyne.NewMenuItem("Hide categories", a.toggleSidebar),
+		fyne.NewMenuItem(sidebarLabel, a.toggleSidebar),
 		fyne.NewMenuItem("Sort by name", func() { a.sortBy(colName) }),
 		fyne.NewMenuItem("Sort by size", func() { a.sortBy(colSize) }),
 		fyne.NewMenuItem("Sort by status", func() { a.sortBy(colStatus) }),
