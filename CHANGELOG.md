@@ -12,8 +12,10 @@ All notable changes to ODM are documented here. The format is based on
   0.4.1").
 - The menu bar on Windows and Linux is ODM's own: titles with room around
   them and a highlight under the pointer, and roomier drop-down menus with
-  a lifted background. macOS keeps its system menu bar. View offers
-  "Show categories" while the sidebar is hidden.
+  a lifted background. With a menu open, pointing at another title opens
+  that one, and the arrow keys move within and between menus. macOS keeps
+  its system menu bar. View offers "Show categories" while the sidebar is
+  hidden.
 
 ### Fixed
 
