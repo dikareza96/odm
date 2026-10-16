@@ -192,6 +192,15 @@ func (g *localGuard) RoundTrip(req *http.Request) (*http.Response, error) {
 	return g.next.RoundTrip(req)
 }
 
+// CloseIdleConnections passes http.Client.CloseIdleConnections on to the
+// wrapped transport; without it the call stops here and every guarded
+// client (each probe) leaves its pool of connections open.
+func (g *localGuard) CloseIdleConnections() {
+	if c, ok := g.next.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
 // manifestPublic decides once whether the manifest's host is public: it is
 // local only when every address it has is local. Through a proxy a name
 // that does not resolve here counts as public (the strict side): only the

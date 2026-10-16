@@ -12,6 +12,8 @@ All notable changes to ODM are documented here. The format is based on
   file in its download history. Chrome reports those to extensions as if
   they had just been created; the extension now takes over only downloads
   that are starting. A pile of such windows made the whole computer slow.
+- The New Download window's size check now closes its connections when it
+  is done instead of leaving them open.
 
 ## [0.4.2] - 2026-10-16
 

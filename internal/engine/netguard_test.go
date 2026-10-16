@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeNet answers requests without a network: a redirect where one is
@@ -340,5 +341,33 @@ func TestGrabberStaysOffLAN(t *testing.T) {
 		if h != "site.example" {
 			t.Fatalf("the queued file reached %s", h)
 		}
+	}
+}
+
+// Probe closes its guarded client when done; the close must reach the
+// cloned transport, or every probe leaves its connections open.
+func TestLocalGuardClosesIdleConnections(t *testing.T) {
+	closed := make(chan struct{}, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateClosed {
+			closed <- struct{}{}
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	c := guardLocal(&http.Client{Transport: &http.Transport{}}, srv.URL)
+	resp, err := c.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	c.CloseIdleConnections()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the idle connection stayed open")
 	}
 }
