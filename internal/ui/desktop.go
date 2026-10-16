@@ -25,6 +25,7 @@ import (
 
 	"odm/internal/clipmon"
 	"odm/internal/engine"
+	"odm/internal/version"
 )
 
 // Available reports whether this build includes the desktop UI.
@@ -52,7 +53,8 @@ func Run(ctx context.Context, mgr *engine.Manager, opts Options) error {
 	}
 	a.fyneApp = app.NewWithID("com.ochi.odm")
 	a.fyneApp.Settings().SetTheme(newTheme())
-	a.win = a.fyneApp.NewWindow("Ochi Download Manager")
+	// The version in the title tells at a glance which build is running.
+	a.win = a.fyneApp.NewWindow(version.Name + " " + version.Version)
 	a.win.Resize(fyne.NewSize(1080, 660))
 	a.win.SetIcon(theme.DownloadIcon())
 

@@ -6,6 +6,11 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- The main window's title shows the version ("Ochi Download Manager
+  0.4.1").
+
 ### Fixed
 
 - The download list's last column (Description) reaches the right edge:
