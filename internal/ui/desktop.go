@@ -523,14 +523,16 @@ func (a *application) layoutColumns(total float32) {
 		fixedSum += w
 	}
 	// widget.Table spaces columns by its theme's Padding (not the separator
-	// thickness); leaving that gap out of the sum made the row wider than the
-	// view, which showed a horizontal scrollbar and clipped Description. The
-	// last 2px absorb float rounding.
+	// thickness), between columns only: its content is the widths plus
+	// (columns-1) gaps. Leaving the gaps out made the row wider than the
+	// view (a horizontal scrollbar, Description clipped); counting one gap
+	// too many, plus slack, left a strip after Description that the header
+	// and the selection did not reach. Half a pixel absorbs float rounding.
 	gap := theme.Padding()
 	if a.table != nil {
 		gap = a.table.Theme().Size(theme.SizeNamePadding)
 	}
-	total -= float32(columnCount)*gap + 2
+	total -= float32(columnCount-1)*gap + 0.5
 	slack := total - fixedSum
 	// Below these minimums the table scrolls horizontally rather than
 	// squeezing names into unreadable slivers.

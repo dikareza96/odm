@@ -6,6 +6,12 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- The download list's last column (Description) reaches the right edge:
+  its header and the selected row stopped a few pixels short, and a stray
+  grid line stood in the gap.
+
 ## [0.4.1] - 2026-10-16
 
 ### Security
