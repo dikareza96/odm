@@ -6,10 +6,18 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-16
+
+### Added
+
+- When the window stops responding for 5 seconds, ODM writes where it is
+  stuck to `odm-hang-<time>.txt` in its settings folder, to attach to a
+  bug report.
+
 ### Changed
 
 - The main window's title shows the version ("Ochi Download Manager
-  0.4.1").
+  0.4.2").
 - The menu bar on Windows and Linux is ODM's own: titles with room around
   them and a highlight under the pointer, and roomier drop-down menus with
   a lifted background. With a menu open, pointing at another title opens
@@ -269,7 +277,8 @@ All notable changes to ODM are documented here. The format is based on
   instance); no TCP port is opened unless `-serve` is given, and that
   listener requires a per-run token and rejects foreign origins.
 
-[Unreleased]: https://github.com/troke12/odm/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/troke12/odm/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/troke12/odm/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/troke12/odm/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/troke12/odm/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/troke12/odm/compare/v0.3.0...v0.3.1
