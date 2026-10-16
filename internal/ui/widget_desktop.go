@@ -27,8 +27,18 @@ type toolButton struct {
 	text     string
 	onTap    func()
 	hover    bool
+	pressed  bool // the mouse button is down on it
 	disabled bool
 }
+
+// The hover and press feedback rely on these: with the wrong method
+// signature (MouseIn taking a *fyne.PointEvent, as it once did) a type is
+// silently not Hoverable and the toolbar shows no hover at all.
+var (
+	_ desktop.Hoverable = (*toolButton)(nil)
+	_ desktop.Mouseable = (*toolButton)(nil)
+	_ fyne.Tappable     = (*toolButton)(nil)
+)
 
 // setEnabled greys the button out when its action does not apply to the
 // current selection, as classic download-manager toolbars do.
@@ -38,7 +48,7 @@ func (b *toolButton) setEnabled(on bool) {
 	}
 	b.disabled = !on
 	if b.disabled {
-		b.hover = false
+		b.hover, b.pressed = false, false
 	}
 	b.Refresh()
 }
@@ -55,16 +65,32 @@ func (b *toolButton) Tapped(*fyne.PointEvent) {
 	}
 }
 
-func (b *toolButton) MouseIn(*fyne.PointEvent) {
+func (b *toolButton) MouseIn(*desktop.MouseEvent) {
 	if !b.disabled {
 		b.hover = true
 		b.Refresh()
 	}
 }
 
-func (b *toolButton) MouseMoved(*fyne.PointEvent) {}
+func (b *toolButton) MouseMoved(*desktop.MouseEvent) {}
 
-func (b *toolButton) MouseOut() { b.hover = false; b.Refresh() }
+func (b *toolButton) MouseOut() { b.hover, b.pressed = false, false; b.Refresh() }
+
+// MouseDown and MouseUp show the button pushed in while it is held, like a
+// native toolbar; the action runs on Tapped (released over the button).
+func (b *toolButton) MouseDown(e *desktop.MouseEvent) {
+	if !b.disabled && e.Button == desktop.MouseButtonPrimary {
+		b.pressed = true
+		b.Refresh()
+	}
+}
+
+func (b *toolButton) MouseUp(*desktop.MouseEvent) {
+	if b.pressed {
+		b.pressed = false
+		b.Refresh()
+	}
+}
 
 type toolButtonRenderer struct {
 	btn     *toolButton
@@ -92,9 +118,14 @@ func (b *toolButton) CreateRenderer() fyne.WidgetRenderer {
 func (r *toolButtonRenderer) Layout(size fyne.Size) {
 	r.bg.Resize(size)
 	const pad, iconSize = float32(4), float32(30)
-	r.icon.Move(fyne.NewPos(size.Width/2-iconSize/2, pad))
-	r.icon.Resize(fyne.NewSize(iconSize, iconSize))
-	top := pad + iconSize + 3
+	// Held down: the icon shrinks a little and the content sinks a pixel.
+	icon, sink := iconSize, float32(0)
+	if r.btn.pressed {
+		icon, sink = iconSize-2, 1
+	}
+	r.icon.Move(fyne.NewPos(size.Width/2-icon/2, pad+(iconSize-icon)/2+sink))
+	r.icon.Resize(fyne.NewSize(icon, icon))
+	top := pad + iconSize + 3 + sink
 	r.label.Move(fyne.NewPos(0, top))
 	r.label.Resize(fyne.NewSize(size.Width, size.Height-top-pad))
 }
@@ -112,8 +143,11 @@ func (r *toolButtonRenderer) Refresh() {
 	case r.btn.disabled:
 		r.bg.FillColor = color.Transparent
 		r.label.Color = theme.DisabledColor()
+	case r.btn.pressed:
+		r.bg.FillColor = odmPalette.pressed
+		r.label.Color = theme.ForegroundColor()
 	case r.btn.hover:
-		r.bg.FillColor = theme.HoverColor()
+		r.bg.FillColor = odmPalette.hover
 		r.label.Color = theme.ForegroundColor()
 	default:
 		r.bg.FillColor = color.Transparent
@@ -124,6 +158,7 @@ func (r *toolButtonRenderer) Refresh() {
 		r.icon.Resource = theme.NewDisabledResource(r.btn.icon)
 	}
 	r.label.Text = r.btn.text
+	r.Layout(r.btn.Size())
 	r.bg.Refresh()
 	r.icon.Refresh()
 	r.label.Refresh()
@@ -322,9 +357,12 @@ func (h *headerLabel) Tapped(*fyne.PointEvent) {
 	}
 }
 
-func (h *headerLabel) MouseIn(*fyne.PointEvent) { h.hover = true; h.Refresh() }
+// Hoverable needs these exact signatures; see the note at toolButton.
+var _ desktop.Hoverable = (*headerLabel)(nil)
 
-func (h *headerLabel) MouseMoved(*fyne.PointEvent) {}
+func (h *headerLabel) MouseIn(*desktop.MouseEvent) { h.hover = true; h.Refresh() }
+
+func (h *headerLabel) MouseMoved(*desktop.MouseEvent) {}
 
 func (h *headerLabel) MouseOut() { h.hover = false; h.Refresh() }
 
