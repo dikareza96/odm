@@ -94,6 +94,7 @@ func Run(ctx context.Context, mgr *engine.Manager, opts Options) error {
 			}
 		}()
 	}
+	go a.watchDPI(ctx)
 	a.setupTray()
 	if opts.Hidden && a.trayOK {
 		a.fyneApp.Run() // window stays hidden until the tray or a relaunch shows it

@@ -13,6 +13,10 @@ All notable changes to ODM are documented here. The format is based on
 
 ### Fixed
 
+- On Windows, a window moved to a monitor with another display scale
+  (100% and 200%, say) is redrawn at that scale; its content used to keep
+  the old one and looked tiny or huge. This works around Fyne recomputing
+  the scale before Windows reports the new one.
 - The download list's last column (Description) reaches the right edge:
   its header and the selected row stopped a few pixels short, and a stray
   grid line stood in the gap.
