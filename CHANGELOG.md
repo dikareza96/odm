@@ -6,8 +6,23 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- The main window's title shows the version ("Ochi Download Manager
+  0.4.1").
+- The menu bar on Windows and Linux is ODM's own: titles with room around
+  them and a highlight under the pointer, and roomier drop-down menus with
+  a lifted background. With a menu open, pointing at another title opens
+  that one, and the arrow keys move within and between menus. macOS keeps
+  its system menu bar. View offers "Show categories" while the sidebar is
+  hidden.
+
 ### Fixed
 
+- Removing a download no longer freezes the window ("Not Responding"):
+  Windows can take seconds to delete a large partial file, and that ran
+  on the UI thread. Removal now runs in the background and the download
+  leaves the list at once.
 - Toolbar buttons and the list's column headers highlight under the
   pointer again (their hover code never ran), and a toolbar button looks
   pushed in while it is held.
@@ -28,17 +43,6 @@ All notable changes to ODM are documented here. The format is based on
 - The download list's last column (Description) reaches the right edge:
   its header and the selected row stopped a few pixels short, and a stray
   grid line stood in the gap.
-
-### Changed
-
-- The main window's title shows the version ("Ochi Download Manager
-  0.4.1").
-- The menu bar on Windows and Linux is ODM's own: titles with room around
-  them and a highlight under the pointer, and roomier drop-down menus with
-  a lifted background. With a menu open, pointing at another title opens
-  that one, and the arrow keys move within and between menus. macOS keeps
-  its system menu bar. View offers "Show categories" while the sidebar is
-  hidden.
 
 ## [0.4.1] - 2026-10-16
 
