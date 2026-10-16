@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -154,6 +155,25 @@ type tableCell struct {
 	text    *canvas.Text
 	full    string
 	hasIcon bool
+	// row is the table row this cell shows (set by updateCell); onHover
+	// reports the pointer entering (row) or leaving (-1) it, so the whole
+	// row is highlighted rather than Fyne's single-cell hover marker.
+	row     int
+	onHover func(row int)
+}
+
+func (c *tableCell) MouseIn(*desktop.MouseEvent) {
+	if c.onHover != nil {
+		c.onHover(c.row)
+	}
+}
+
+func (c *tableCell) MouseMoved(*desktop.MouseEvent) {}
+
+func (c *tableCell) MouseOut() {
+	if c.onHover != nil {
+		c.onHover(-1)
+	}
 }
 
 func newTableCell() *tableCell {
@@ -191,10 +211,15 @@ func (c *tableCell) showIcon(on bool) {
 
 // setSelected paints the whole row: widget.Table only highlights the one
 // clicked cell, so every cell of the selected row draws its own background.
-func (c *tableCell) setSelected(on bool) {
+// setSelected paints the cell's background: selected rows in the accent,
+// the row under the pointer in the hover colour.
+func (c *tableCell) setSelected(on, hovered bool) {
 	want := color.Color(color.Transparent)
-	if on {
+	switch {
+	case on:
 		want = odmPalette.accentSoft
+	case hovered:
+		want = odmPalette.hover
 	}
 	if c.bg.FillColor != want {
 		c.bg.FillColor = want

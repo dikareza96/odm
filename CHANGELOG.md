@@ -19,6 +19,11 @@ All notable changes to ODM are documented here. The format is based on
 
 ### Fixed
 
+- Selecting a download with a click is immediate; it used to wait about a
+  third of a second, as the list waited to see whether a double click
+  followed. Double-clicking still opens the progress window.
+- The pointer highlights the whole row in the download list, not just
+  the cell under it.
 - The hover highlight in the category sidebar no longer vanishes within a
   second: the list's refresh every second cleared it, so the sidebar is
   now refreshed only when it changes. Its rows also no longer shift a few

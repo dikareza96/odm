@@ -11,6 +11,7 @@ import (
 
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 
 	"odm/internal/engine"
 )
@@ -144,5 +145,81 @@ func TestSameEntries(t *testing.T) {
 	b[0].text, b[0].icon = "Video (1)", theme.MediaMusicIcon()
 	if sameEntries(a, b) {
 		t.Fatal("a changed icon went unnoticed")
+	}
+}
+
+func newListApp(t *testing.T, names ...string) *application {
+	t.Helper()
+	mgr := engine.NewManager(engine.Settings{Dir: t.TempDir()}, "")
+	now := time.Now()
+	var states []engine.State
+	for i, name := range names {
+		states = append(states, engine.State{ID: name, URL: "http://x/" + name, FileName: name,
+			Status: engine.StatusPaused, Order: i + 1, CreatedAt: now, UpdatedAt: now})
+	}
+	mgr.Restore(states)
+	a := &application{mgr: mgr, progressWindows: map[string]*progressView{}, selectedRow: -1, sortCol: -1}
+	a.fyneApp = test.NewTempApp(t)
+	a.fyneApp.Settings().SetTheme(newTheme())
+	a.win = a.fyneApp.NewWindow("t")
+	a.build()
+	a.win.Resize(fyne.NewSize(1000, 400))
+	a.refresh()
+	return a
+}
+
+// The pointer highlights its whole row, not the one cell under it.
+func TestListHoverWholeRow(t *testing.T) {
+	a := newListApp(t, "a.zip", "b.zip", "c.zip")
+	d := a.fyneApp.Driver()
+	base := d.AbsolutePositionForObject(a.table)
+	a.mu.Lock()
+	headH, rowH := a.headH, a.rowH
+	a.mu.Unlock()
+	gap := a.table.Theme().Size(theme.SizeNamePadding)
+	rowY := func(r int) float32 { return headH + gap + float32(r)*(rowH+gap) + rowH/2 }
+	pixel := func(x, y float32) [3]uint32 {
+		img := a.win.Canvas().Capture()
+		s := a.win.Canvas().Scale()
+		r, g, b, _ := img.At(int((base.X+x)*s), int((base.Y+y)*s)).RGBA()
+		return [3]uint32{r, g, b}
+	}
+	far := a.colWidths[colName] + a.colWidths[colQueue] + a.colWidths[colSize] + 40 // inside Status
+	before := pixel(far, rowY(1))
+	test.MoveMouse(a.win.Canvas(), base.Add(fyne.NewPos(30, rowY(1)))) // over the name cell of row 1
+	if a.hoverRow != 1 {
+		t.Fatalf("hoverRow = %d", a.hoverRow)
+	}
+	if got := pixel(far, rowY(1)); got == before {
+		t.Fatal("another cell of the hovered row is not highlighted")
+	}
+	if got, want := pixel(far, rowY(2)), before; got != want {
+		t.Fatalf("a row not under the pointer is highlighted: %v vs %v", got, want)
+	}
+}
+
+// One tap selects at once (no DoubleTappable delay); two quick taps on
+// the same download open its progress window.
+func TestListDoubleClick(t *testing.T) {
+	a := newListApp(t, "a.zip", "b.zip")
+	var tbl fyne.CanvasObject = a.table
+	if _, ok := tbl.(fyne.DoubleTappable); ok {
+		t.Fatal("the list is DoubleTappable again: Fyne would delay every tap")
+	}
+	a.table.OnSelected(widget.TableCellID{Row: 0, Col: 0})
+	if len(a.progressWindows) != 0 {
+		t.Fatal("a single tap opened a window")
+	}
+	if cur, ok := a.current(); !ok || cur.ID != "a.zip" {
+		t.Fatalf("selection %v", cur.ID)
+	}
+	a.table.OnSelected(widget.TableCellID{Row: 0, Col: 3})
+	if len(a.progressWindows) != 1 {
+		t.Fatal("a double tap did not open the progress window")
+	}
+	// A tap on another row right after is a new single tap.
+	a.table.OnSelected(widget.TableCellID{Row: 1, Col: 0})
+	if len(a.progressWindows) != 1 {
+		t.Fatal("taps on two rows counted as a double click")
 	}
 }

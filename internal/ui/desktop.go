@@ -208,6 +208,11 @@ type application struct {
 	selected    map[string]bool
 	focusID     string
 	selectedRow int // index of focusID in items, kept in step by refresh
+	// hoverRow is the list row under the pointer (-1: none), painted
+	// across all its cells; lastClick* spot a double click (see onRowTap).
+	hoverRow    int
+	lastClickID string
+	lastClickAt time.Time
 	sortCol     int
 	sortAsc     bool
 	counts      map[string]int
@@ -253,7 +258,11 @@ func newDownloadTable(a *application) *downloadTable {
 		defer a.mu.Unlock()
 		return len(a.items), columnCount
 	}
-	t.CreateCell = func() fyne.CanvasObject { return newTableCell() }
+	t.CreateCell = func() fyne.CanvasObject {
+		c := newTableCell()
+		c.onHover = a.setHoverRow
+		return c
+	}
 	t.UpdateCell = a.updateCell
 	t.ShowHeaderRow = true
 	t.ExtendBaseWidget(t)
@@ -302,12 +311,6 @@ func (t *downloadTable) Resize(size fyne.Size) {
 	t.app.layoutColumns(size.Width)
 }
 
-func (t *downloadTable) DoubleTapped(*fyne.PointEvent) {
-	if d, ok := t.app.current(); ok {
-		t.app.openProgressWindow(d.ID)
-	}
-}
-
 func (t *downloadTable) TappedSecondary(e *fyne.PointEvent) {
 	t.app.showRowMenu(e.AbsolutePosition)
 }
@@ -337,6 +340,7 @@ var columnFixed = map[int]float32{
 }
 
 func (a *application) build() {
+	a.hoverRow = -1
 	tint := func(icon fyne.Resource, c fyne.ThemeColorName) fyne.Resource {
 		return theme.NewColoredResource(icon, c)
 	}
@@ -387,7 +391,7 @@ func (a *application) build() {
 		// Drop Fyne's single-cell highlight; updateCell paints whole rows.
 		base.UnselectAll()
 		if id.Row >= 0 {
-			a.clickRow(id.Row, currentModifiers())
+			a.onRowTap(id.Row, currentModifiers())
 		}
 	}
 	base.CreateHeader = func() fyne.CanvasObject { return newHeaderLabel(a) }
@@ -821,11 +825,12 @@ func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	}
 
 	a.mu.Lock()
+	c.row = id.Row
 	if id.Row < 0 || id.Row >= len(a.items) {
 		a.mu.Unlock()
 		c.setText("")
 		c.showIcon(false)
-		c.setSelected(false)
+		c.setSelected(false, false)
 		return
 	}
 	d := a.items[id.Row]
@@ -837,9 +842,10 @@ func (a *application) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	c.showIcon(id.Col == colName)
 	a.mu.Lock()
 	selected := a.selected[d.ID]
+	hovered := a.hoverRow == id.Row
 	a.rowH = rowHeight()
 	a.mu.Unlock()
-	c.setSelected(selected)
+	c.setSelected(selected, hovered)
 
 	switch id.Col {
 	case colName:
@@ -1239,6 +1245,47 @@ func currentModifiers() fyne.KeyModifier {
 
 // clickRow applies a click on row: plain selects only it, Ctrl (Cmd on macOS)
 // toggles it, Shift selects the range from the focus row.
+// onRowTap selects a row and opens its progress window on a double
+// click. The double click is spotted here, from two taps on the same
+// download within the driver's double-tap delay, rather than through
+// fyne.DoubleTappable: for a DoubleTappable widget Fyne holds every single
+// tap back for that delay (about 300 ms) to see whether a second follows,
+// which made selecting a row feel slow.
+func (a *application) onRowTap(row int, mods fyne.KeyModifier) {
+	a.clickRow(row, mods)
+	d, ok := a.current()
+	if !ok || mods != 0 {
+		a.lastClickID = ""
+		return
+	}
+	now := time.Now()
+	if d.ID == a.lastClickID && now.Sub(a.lastClickAt) <= a.fyneApp.Driver().DoubleTapDelay() {
+		a.lastClickID = "" // a third tap starts over
+		a.openProgressWindow(d.ID)
+		return
+	}
+	a.lastClickID, a.lastClickAt = d.ID, now
+}
+
+// setHoverRow repaints the rows the pointer left and entered.
+func (a *application) setHoverRow(row int) {
+	a.mu.Lock()
+	old := a.hoverRow
+	a.hoverRow = row
+	a.mu.Unlock()
+	if old == row || a.table == nil {
+		return
+	}
+	for _, r := range []int{old, row} {
+		if r < 0 {
+			continue
+		}
+		for col := 0; col < columnCount; col++ {
+			a.table.RefreshItem(widget.TableCellID{Row: r, Col: col})
+		}
+	}
+}
+
 func (a *application) clickRow(row int, mods fyne.KeyModifier) {
 	a.mu.Lock()
 	if row < 0 || row >= len(a.items) {
