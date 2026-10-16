@@ -6,6 +6,16 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+
+- File downloads get the protection streams got in 0.4.0: a link on a
+  public server that redirects to the user's own machine or network
+  (localhost, a router, a NAS) is refused, and so is the New Download
+  window's look at it. Links that are themselves on the local network
+  still work. The site grabber is held to its start page the same way:
+  crawling a public site no longer fetches or queues pages and files on
+  the local network that it links to.
+
 ## [0.4.0] - 2026-10-15
 
 ### Added

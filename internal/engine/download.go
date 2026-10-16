@@ -41,6 +41,9 @@ type Download struct {
 	Chunks  []*Chunk
 	// Stream is set for a segmented (HLS/DASH) download; see stream.go.
 	Stream *StreamJob
+	// TrustFrom, when set, replaces URL as the address localGuard judges
+	// (AddOptions.TrustFrom).
+	TrustFrom string
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -271,7 +274,7 @@ func (d *Download) prepare(ctx context.Context) error {
 	d.mu.Unlock()
 
 	if needProbe {
-		p, err := Inspect(ctx, d.client, rawURL, headers)
+		p, err := Inspect(ctx, d.guardedClient(), rawURL, headers)
 		if err != nil {
 			return err
 		}
@@ -427,6 +430,9 @@ func (d *Download) fetchWithRetry(ctx context.Context, ch *Chunk) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if errors.Is(err, errLocalNetwork) {
+			return err // the same refusal on every try
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -471,7 +477,7 @@ func (d *Download) fetch(ctx context.Context, ch *Chunk) error {
 		req.Header.Set("Cookie", cookieHeader(cookies))
 	}
 
-	resp, err := d.client.Do(req)
+	resp, err := d.guardedClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -724,6 +730,7 @@ type State struct {
 	Err          string            `json:"error,omitempty"`
 	Chunks       []*Chunk          `json:"chunks"`
 	Stream       *StreamJob        `json:"stream,omitempty"`
+	TrustFrom    string            `json:"trust_from,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 	UpdatedAt    time.Time         `json:"updated_at"`
 }
@@ -755,7 +762,7 @@ func (d *Download) State() State {
 		OpenWhenDone: d.OpenWhenDone, CategoryName: d.CategoryName,
 		Queue: d.Queue, Description: d.Description, Order: d.Order,
 		Total: d.Total, RangeOK: d.RangeOK, Status: status, Err: d.Err,
-		Chunks: chunks, Stream: stream, CreatedAt: d.CreatedAt, UpdatedAt: time.Now(),
+		Chunks: chunks, Stream: stream, TrustFrom: d.TrustFrom, CreatedAt: d.CreatedAt, UpdatedAt: time.Now(),
 	}
 }
 
@@ -781,6 +788,7 @@ func Restore(s State, client *http.Client) *Download {
 	d.Order = s.Order
 	d.Chunks = s.Chunks
 	d.Stream = s.Stream
+	d.TrustFrom = s.TrustFrom
 	if s.Stream != nil {
 		d.streamDone = s.Stream.Done
 		if s.Status == StatusComplete {

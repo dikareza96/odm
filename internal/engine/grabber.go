@@ -48,6 +48,11 @@ func (m *Manager) Grab(ctx context.Context, o GrabberOptions, progress func(page
 		return GrabberResult{}, fmt.Errorf("invalid start URL")
 	}
 	fileTypes := m.Settings().FileTypes
+	// The crawl, and every file it queues, may reach the local network
+	// only if the start page is on it: a public page must not steer ODM
+	// to the router or localhost by linking there (see localGuard).
+	crawl := guardLocal(m.httpClient(), start.String())
+	defer crawl.CloseIdleConnections()
 
 	type item struct {
 		u     *url.URL
@@ -64,7 +69,7 @@ func (m *Manager) Grab(ctx context.Context, o GrabberOptions, progress func(page
 		cur := queue[0]
 		queue = queue[1:]
 
-		body, err := m.fetchPage(ctx, cur.u.String())
+		body, err := fetchPage(ctx, crawl, cur.u.String())
 		if err != nil {
 			continue
 		}
@@ -91,6 +96,7 @@ func (m *Manager) Grab(ctx context.Context, o GrabberOptions, progress func(page
 					Dir:         o.Dir,
 					Connections: o.Connections,
 					Start:       o.Start,
+					TrustFrom:   start.String(),
 				})
 				continue
 			}
@@ -115,13 +121,13 @@ func (m *Manager) httpClient() *http.Client {
 	return m.client
 }
 
-func (m *Manager) fetchPage(ctx context.Context, raw string) (string, error) {
+func fetchPage(ctx context.Context, client *http.Client, raw string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", currentUserAgent())
-	resp, err := m.httpClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

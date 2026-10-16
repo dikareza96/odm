@@ -616,6 +616,10 @@ type AddOptions struct {
 	// Stream makes this a segmented (HLS/DASH) download; URL is then the
 	// manifest the stream was found at.
 	Stream *StreamJob
+	// TrustFrom is the address that decides whether this download may
+	// reach the local network (see localGuard), when that is not URL
+	// itself: the page a crawl started from, for the files it found.
+	TrustFrom string
 }
 
 // Create queues a download from opts and returns its projection.
@@ -643,6 +647,7 @@ func (m *Manager) Create(o AddOptions) Info {
 	d.OpenWhenDone = o.OpenWhenDone
 	d.Queue = queue
 	d.Description = o.Description
+	d.TrustFrom = o.TrustFrom
 	if o.Stream != nil {
 		sj := *o.Stream
 		d.Stream = &sj
@@ -672,7 +677,10 @@ func (m *Manager) Create(o AddOptions) Info {
 
 // Probe inspects a URL without creating a download.
 func (m *Manager) Probe(ctx context.Context, rawURL string, headers map[string]string) (*Probe, error) {
-	return Inspect(ctx, m.client, strings.TrimSpace(rawURL), headers)
+	rawURL = strings.TrimSpace(rawURL)
+	c := guardLocal(m.HTTPClient(), rawURL)
+	defer c.CloseIdleConnections() // the guard's pool is its own
+	return Inspect(ctx, c, rawURL, headers)
 }
 
 // SetSpeedLimit applies a per-download cap in bytes/sec.
@@ -764,6 +772,7 @@ func (m *Manager) Readdress(ctx context.Context, id, newURL string) error {
 		// pinned rendition is kept too, so the new manifest must offer
 		// the same one.
 		d.URL, d.FinalURL = newURL, ""
+		d.TrustFrom = "" // the user gave this address
 		d.Stream.Manifest = newURL
 		d.Stream.Video, d.Stream.Audio = "", ""
 		if d.Status == StatusError {
@@ -779,11 +788,14 @@ func (m *Manager) Readdress(ctx context.Context, id, newURL string) error {
 	if !probed { // never started: the next start probes the new address
 		d.mu.Lock()
 		d.URL, d.FinalURL = newURL, ""
+		d.TrustFrom = "" // the user gave this address
 		d.mu.Unlock()
 		m.changed(d)
 		return nil
 	}
-	p, err := Inspect(ctx, m.HTTPClient(), newURL, headers)
+	check := guardLocal(m.HTTPClient(), newURL)
+	defer check.CloseIdleConnections() // the guard's pool is its own
+	p, err := Inspect(ctx, check, newURL, headers)
 	if err != nil {
 		return fmt.Errorf("checking the new address: %w", err)
 	}
@@ -795,6 +807,7 @@ func (m *Manager) Readdress(ctx context.Context, id, newURL string) error {
 	}
 	d.mu.Lock()
 	d.URL, d.FinalURL, d.cookies = newURL, p.FinalURL, p.Cookies
+	d.TrustFrom = "" // the user gave this address
 	if d.Status == StatusError {
 		d.Status, d.Err = StatusPaused, ""
 	}
