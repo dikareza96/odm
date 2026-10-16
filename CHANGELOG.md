@@ -6,6 +6,13 @@ All notable changes to ODM are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- Starting Chrome no longer opens a New Download window for every old
+  file in its download history. Chrome reports those to extensions as if
+  they had just been created; the extension now takes over only downloads
+  that are starting. A pile of such windows made the whole computer slow.
+
 ## [0.4.2] - 2026-10-16
 
 ### Added

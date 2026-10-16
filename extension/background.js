@@ -45,6 +45,14 @@ function hasType(url, types, filename) {
   return set.has(urlExt(url)) || (fromName !== null && set.has(fromName[1].toLowerCase()));
 }
 
+// isNewDownload tells a download that is starting from one Chrome replays
+// through onCreated when it loads its download history at startup (finished
+// or interrupted items, often with expired addresses): only the first goes
+// to ODM.
+function isNewDownload(item) {
+  return item.state === "in_progress";
+}
+
 // hostMatches: "example.org" matches that host; "*.example.org" matches it
 // and every subdomain.
 function hostMatches(host, pattern) {
@@ -417,7 +425,7 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
   // service worker and a Firefox event page require.
 
   chrome.downloads.onCreated.addListener(async (item) => {
-    if (!(await isEnabled())) return;
+    if (!isNewDownload(item) || !(await isEnabled())) return;
     const url = item.finalUrl || item.url;
     if (!url || !/^https?:/.test(url)) return;
     const { bypass = {} } = await chrome.storage.session.get("bypass");
@@ -562,5 +570,5 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { hasType, hostMatches, isExcluded, mediaKind, streamFormat, normalizeMediaURL, totalSize, mergeMedia, popupReferrer, describePlaylist, sameDocument, DEFAULT_TYPES };
+  module.exports = { hasType, isNewDownload, hostMatches, isExcluded, mediaKind, streamFormat, normalizeMediaURL, totalSize, mergeMedia, popupReferrer, describePlaylist, sameDocument, DEFAULT_TYPES };
 }

@@ -142,3 +142,9 @@ test("sameDocument", () => {
   assert.equal(bg.sameDocument("https://s.example/a", "https://s.example/b"), false);
   assert.equal(bg.sameDocument("not a url", "not a url"), false);
 });
+
+test("isNewDownload skips history Chrome replays at startup", () => {
+  assert.equal(bg.isNewDownload({ state: "in_progress" }), true);
+  assert.equal(bg.isNewDownload({ state: "complete" }), false);
+  assert.equal(bg.isNewDownload({ state: "interrupted" }), false);
+});
