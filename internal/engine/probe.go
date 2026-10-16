@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -131,24 +132,57 @@ func FileName(resp *http.Response, rawURL string) string {
 
 // SanitizeName strips path separators and characters illegal on Windows.
 func SanitizeName(name string) string {
-	name = strings.TrimSpace(name)
-	name = strings.ReplaceAll(name, "\\", "_")
-	name = strings.ReplaceAll(name, "/", "_")
-	name = strings.ReplaceAll(name, ":", "_")
-	for _, r := range []string{"<", ">", "\"", "|", "?", "*"} {
-		name = strings.ReplaceAll(name, r, "_")
-	}
+	// Invalid UTF-8 cannot become a Windows (UTF-16) name, and control
+	// characters (0x00-0x1F, DEL) are refused there or garble listings.
+	name = strings.ToValidUTF8(name, "_")
+	name = strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20 || r == 0x7f:
+			return '_'
+		case strings.ContainsRune(`\/:<>"|?*`, r):
+			return '_'
+		}
+		return r
+	}, strings.TrimSpace(name))
 	name = strings.Trim(name, ". ")
 	if name == "" || name == "." || name == ".." {
 		return ""
 	}
-	if len(name) > 200 {
-		name = name[:200]
-	}
+	name = capName(name, maxNameBytes)
 	if windowsReserved(name) {
 		name = "_" + name
 	}
 	return name
+}
+
+// maxNameBytes keeps names well inside the 255-byte limit of most file
+// systems, with room for " (12)" and the ".odmpart" suffix ODM adds.
+const maxNameBytes = 200
+
+// capName shortens name to at most n bytes without cutting a character in
+// two, keeping a short extension (".mp4", ".tar.gz" counts as ".gz") so the
+// file still opens with the right program.
+func capName(name string, n int) string {
+	if len(name) <= n {
+		return name
+	}
+	ext := filepath.Ext(name)
+	if len(ext) > 16 || len(ext) >= n {
+		ext = ""
+	}
+	base := name[:len(name)-len(ext)]
+	limit := n - len(ext)
+	cut := 0
+	for i := range base { // i walks rune starts
+		if i > limit {
+			break
+		}
+		cut = i
+	}
+	if len(base) <= limit {
+		cut = len(base)
+	}
+	return strings.TrimRight(base[:cut], ". ") + ext
 }
 
 // windowsReserved reports whether Windows treats name as a device (CON,

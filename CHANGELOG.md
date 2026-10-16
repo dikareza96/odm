@@ -16,6 +16,14 @@ All notable changes to ODM are documented here. The format is based on
   crawling a public site no longer fetches or queues pages and files on
   the local network that it links to.
 
+### Fixed
+
+- File names drop control characters and invalid UTF-8, and a name
+  shortened to fit keeps its extension and no longer cuts a character in
+  two.
+- The extension keeps a tab's media list when only the page's `#hash`
+  changes; any other change of address still starts a fresh list.
+
 ## [0.4.0] - 2026-10-15
 
 ### Added

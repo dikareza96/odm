@@ -134,3 +134,11 @@ test("mergeMedia keeps what a peek learned", () => {
   assert.equal(next[0].live, true);
   assert.equal(next[0].at, 1);
 });
+
+test("sameDocument", () => {
+  assert.equal(bg.sameDocument("https://s.example/watch?v=1#t=10", "https://s.example/watch?v=1#comments"), true);
+  assert.equal(bg.sameDocument("https://s.example/watch?v=1", "https://s.example/watch?v=1#x"), true);
+  assert.equal(bg.sameDocument("https://s.example/watch?v=1", "https://s.example/watch?v=2"), false);
+  assert.equal(bg.sameDocument("https://s.example/a", "https://s.example/b"), false);
+  assert.equal(bg.sameDocument("not a url", "not a url"), false);
+});
